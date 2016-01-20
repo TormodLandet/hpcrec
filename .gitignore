@@ -1,0 +1,7 @@
+*.pyc
+.project
+.pydevproject
+.settings
+README.html
+*.msh
+*.geo
