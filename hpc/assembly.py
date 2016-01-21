@@ -1,5 +1,6 @@
 from __future__ import division
 import numpy
+from .linalg import Matrix, Vector
 from .polynomials import eval_phi
 
 
@@ -8,8 +9,8 @@ def assemble(domain):
     Assemble HPC matrix for the given domain
     """
     N = len(domain.dof_coordinates)
-    A = numpy.zeros((N, N), float)
-    b = numpy.zeros(N, float)
+    A = Matrix(N, N)
+    b = Vector(N)
     
     for dof in range(N):
         neighbours, coeffs, _, _ = eval_phi(domain, dof)

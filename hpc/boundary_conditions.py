@@ -15,7 +15,7 @@ def apply_bcs(domain, A, b, bcs):
         seen_dofs.add(dof)
         
         if bc_type == 'D':
-            A[dof,:] = 0
+            A.set_row_to_zero(dof)
             A[dof,dof] = 1
             b[dof] = value
             continue
@@ -29,7 +29,7 @@ def apply_bcs(domain, A, b, bcs):
         else:
             raise NotImplementedError('BC type %r not implemented' % bc_type)
         
-        A[dof, :] = 0
+        A.set_row_to_zero(dof)
         for i, dof_i in enumerate(neighbours):
             A[dof, dof_i] = coeffs_diff[i]
         b[dof] = value

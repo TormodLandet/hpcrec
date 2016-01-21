@@ -8,43 +8,48 @@ from math import cosh, sinh, sin, cos, pi
 def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fem=0):
     print 'Calculating shoebox with N=%d, L=%d' % (N, L)
     
-    # Read geometry
-    domain = hpc.rectangle_domain((0, 0), (L, h), N*L//h, N)
+    # Create geometry
+    with hpc.Timer('Geometry'):
+        domain = hpc.rectangle_domain((0, 0), (L, h), N*L//h, N)
     
     # Apply refinement
     if refine:
-        Nv = len(domain.vertex_coordinates)
+        Nd = len(domain.dof_coordinates)
         alpha = 1
         beta_x = 1.0
         beta_y = 0.0
-        for i in range(Nv):
-            x, y = domain.vertex_coordinates[i]
+        for i in range(Nd):
+            x, y = domain.dof_coordinates[i]
             xc = L/2*(1 - cos(pi*x/L)**alpha)
             yc = h/2*(1 - cos(pi*y/h)**alpha)
-            domain.vertex_coordinates[i] = (beta_x*xc + (1-beta_x)*x,
+            domain.dof_coordinates[i] = (beta_x*xc + (1-beta_x)*x,
                                             beta_y*yc + (1-beta_y)*y)
     
     # Assemble global system
-    if fem > 0:
-        A, b, solve = shoebox_demo_fem(domain, fem, k, h, neumann)
-    else:
-        A, b, solve = shoebox_demo_hpc(domain, L, k, h, neumann)
+    with hpc.Timer('Assemble'):
+        if fem > 0:
+            A, b, solve = shoebox_demo_fem(domain, fem, k, h, neumann)
+        else:
+            A, b, solve = shoebox_demo_hpc(domain, L, k, h, neumann)
     
     # Print system info
-    maxnz = 0
-    for row in A:
-        nz = sum(1 if v != 0 else 0 for v in row)
-        maxnz = max(maxnz, nz)
-    print 'Maximum number of non zeros in a row:', maxnz
-    #print 'Condition number', numpy.linalg.cond(A)
+    Ndof = len(b)
+    if Ndof < 100:
+        maxnz = 0
+        for row in A:
+            nz = sum(1 if v != 0 else 0 for v in row)
+            maxnz = max(maxnz, nz)
+        print 'Maximum number of non zeros in a row:', maxnz
+        #print 'Condition number', numpy.linalg.cond(A)
     
     # Solve global system
-    try:
-        phi_h = solve()
-    except Exception as e:
-        print 'ERROR:', e.message
-        print 'The global system matrix cannot be inverted!'
-        exit()
+    with hpc.Timer('Solve'):
+        try:
+            phi_h = solve()
+        except Exception as e:
+            print 'ERROR:', e.message
+            print 'The global system matrix cannot be inverted!'
+            exit()
     
     # Analytical solution
     phi_a = numpy.zeros_like(phi_h)
@@ -107,7 +112,9 @@ def shoebox_demo_hpc(domain, L, k, h, neumann=False):
             print '%3d - %8.2g %8.2g' % (i, c[0], c[1])
     
     def solve():
-        return numpy.linalg.solve(A, b)
+        phi_h = hpc.Vector(len(b))
+        hpc.solve(A, phi_h, b)
+        return phi_h
     
     return A, b, solve 
 
@@ -170,8 +177,9 @@ if __name__ == '__main__':
                         help='use FEM instead of HPC (specify order of method as argument)')
     args = parser.parse_args()
     
-    shoebox_demo(N=args.N,
-                 L=args.L,
-                 show_plot=args.plot,
-                 neumann=args.neumann,
-                 fem=args.fem)
+    with hpc.Timer('Shoebox demo'):
+        shoebox_demo(N=args.N,
+                     L=args.L,
+                     show_plot=args.plot,
+                     neumann=args.neumann,
+                     fem=args.fem)
