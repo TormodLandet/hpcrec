@@ -47,9 +47,11 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fe
         try:
             phi_h = solve()
         except Exception as e:
-            print 'ERROR:', e.message
+            print 'ERROR:'
+            print e
             print 'The global system matrix cannot be inverted!'
             exit()
+    phi_h = phi_h.array()
     
     # Analytical solution
     phi_a = numpy.zeros_like(phi_h)
@@ -113,7 +115,8 @@ def shoebox_demo_hpc(domain, L, k, h, neumann=False):
     
     def solve():
         phi_h = hpc.Vector(len(b))
-        hpc.solve(A, phi_h, b)
+        nit = hpc.solve(A, phi_h, b)
+        print 'Done in %d iterations' % nit
         return phi_h
     
     return A, b, solve 
@@ -155,7 +158,8 @@ def shoebox_demo_fem(domain, order, k, h, neumann=False):
     
     def solve():
         q = df.Function(V)
-        df.solve(A, q.vector(), b)
+        nit = df.solve(A, q.vector(), b)
+        print 'Done in %d iterations' % nit
         phi_h = q.compute_vertex_values()
         return phi_h
     
@@ -175,7 +179,16 @@ if __name__ == '__main__':
                         help='include Neumann boundaries')
     parser.add_argument('--fem', '-f', type=int, default=0,
                         help='use FEM instead of HPC (specify order of method as argument)')
+    
+    parser.add_argument('--backend', choices=('auto', 'scipy', 'petsc', 'numpy'), default='auto')
+    parser.add_argument('--solver', default='')
+    parser.add_argument('--preconditioner', default='')
+    
     args = parser.parse_args()
+    
+    hpc.parameters['linear_algebra_backend'] = args.backend
+    if args.solver: hpc.parameters['solver'] = args.solver
+    if args.preconditioner: hpc.parameters['preconditioner'] = args.preconditioner
     
     with hpc.Timer('Shoebox demo'):
         shoebox_demo(N=args.N,

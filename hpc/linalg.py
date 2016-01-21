@@ -1,18 +1,44 @@
-import numpy
+from hpc import parameters
+import numpy.linalg
+
+# Check for scipy
+try:
+    import scipy.sparse
+    import scipy.sparse.linalg
+    has_scipy = True
+except ImportError:
+    has_scipy = False
+
+# Check for PETSc
+try:
+    import petsc4py
+    petsc4py.init()
+    from petsc4py import PETSc
+    has_petsc = True
+except:
+    has_petsc = False
 
 
 DENSE_LIMIT = 1000
 
 
 def get_linalg_backend_type(N):
-    try:
-        import scipy.sparse
-        has_scipy = True
-    except ImportError:
-        has_scipy = False
+    backend = parameters['linear_algebra_backend'] 
+    if backend != 'auto':
+        assert backend in ('scipy', 'petsc', 'numpy')
+        return backend 
     
-    backend = 'numpy' if (N <= DENSE_LIMIT or not has_scipy) else 'scipy'
-    return backend
+    if has_petsc:
+        sparse_backend = 'petsc'
+    elif has_scipy:
+        sparse_backend = 'scipy'
+    else:
+        sparse_backend = None
+    
+    if N <= DENSE_LIMIT or not sparse_backend:
+        return 'numpy'
+    else:
+        return sparse_backend
 
 
 def Matrix(N, M):
@@ -24,6 +50,19 @@ def Matrix(N, M):
         return NumpyMatrix(N, M)
     elif backend == 'scipy':
         return ScipyMatrix(N, M)
+    elif backend == 'petsc':
+        return PetscMatrix(N, N)
+
+
+def Vector(N):
+    """
+    Try to make a smart selection of the matrix type to use
+    """
+    backend = get_linalg_backend_type(N)
+    if backend == 'petsc':
+        return PetscVector(N)
+    else:
+        return NumpyVector(N)
 
 
 class GenericMatrix(object):
@@ -55,56 +94,6 @@ class ScipyMatrix(GenericMatrix):
             self._csr = self._lil.tocsr()
         return self._csr
     
-    def insert_matrix(self, global_indices_cols, global_indices_rows, matrix):
-        """
-        Insert a submatrix into this matrix
-        """
-        N, M = matrix.shape
-        assert N == len(global_indices_cols)
-        assert M == len(global_indices_rows)
-        
-        for i in range(N):
-            gi = global_indices_cols[i]
-            for j in range(M):
-                gj = global_indices_rows[j]
-                self._lil[gi,gj] += matrix[i,j]
-        
-        # Invalidate cached CSR matrix
-        self._csr = None
-    
-    def set_row_to_zero(self, i):
-        """
-        Set the row with the given index to be all zeros.
-        Does not change the sparsity pattern
-        """
-        row = self._lil.data[i]
-        row[:] = [0]*len(row)
-        
-        # Invalidate cached CSR matrix
-        self._csr = None
-    
-    def set_col_to_zero(self, i):
-        """
-        Set the column with the given index to be all zeros.
-        Does not change the sparsity pattern
-        Returns the column as it was before deletion as a 1D array
-        """
-        N = self.shape[0]
-        
-        col = numpy.zeros(N, float)
-        for irow, coljs in enumerate(self._lil.rows):
-            for idx, icol in enumerate(coljs):
-                if icol == i:
-                    col[irow] = self._lil.data[irow][idx]
-                    self._lil.data[irow][idx] = 0
-                if icol >= i:
-                    break
-        
-        # Invalidate cached CSR matrix
-        self._csr = None
-        
-        return col
-    
     def __setitem__(self, key, value):
         """
         Set an item (with global dof indexes)
@@ -119,6 +108,32 @@ class ScipyMatrix(GenericMatrix):
         return '<ScipyMatrix %d by %d>' % self.shape
 
 
+class PetscMatrix(GenericMatrix):
+    def __init__(self, N, M):
+        """
+        A sparse matrix using the PETSc library through petsc4py
+        """
+        self.shape = (N, M)
+        self._mat = PETSc.Mat().createAIJ([N, M], nnz=9)
+    
+    def array(self):
+        return self._mat.getValues(range(self.shape[0]), range(self.shape[1]))
+    
+    def finalize(self):
+        self._mat.assemblyBegin()
+        self._mat.assemblyEnd()
+    
+    def __setitem__(self, key, value):
+        """
+        Set an item (with global dof indexes)
+        """
+        i, j = key
+        self._mat.setValue(i, j, value)
+    
+    def __repr__(self, *args, **kwargs):
+        return '<PetscMatrix %d by %d>' % self.shape
+
+
 class NumpyMatrix(GenericMatrix):
     def __init__(self, N, M):
         """
@@ -129,39 +144,6 @@ class NumpyMatrix(GenericMatrix):
     
     def array(self):
         return self._data
-    
-    def insert_matrix(self, global_indices_cols, global_indices_rows, matrix):
-        """
-        Insert a submatrix into this matrix
-        """
-        N, M = matrix.shape
-        assert N == len(global_indices_cols)
-        assert M == len(global_indices_rows)
-        
-        for i in range(N):
-            gi = global_indices_cols[i]
-            for j in range(M):
-                gj = global_indices_rows[j]
-                self._data[gi,gj] += matrix[i,j]
-    
-    def set_row_to_zero(self, i):
-        """
-        Set the row with the given index to be all zeros.
-        """
-        self._data[i,:] = 0.0
-    
-    def set_col_to_zero(self, i):
-        """
-        Set the column with the given index to be all zeros.
-        Returns the column as it was before deletion as a 1D array
-        """
-        # Copy previous data
-        N = self.shape[0]
-        col = numpy.array(self._data[:,i])
-        col.shape = (N,)
-        
-        self._data[:,i] = 0.0
-        return col
     
     def __setitem__(self, key, value):
         """
@@ -174,13 +156,27 @@ class NumpyMatrix(GenericMatrix):
         return '<NumpyMatrix %d by %d>' % self.shape
 
 
-class Vector(numpy.ndarray, GenericVector):
+class NumpyVector(numpy.ndarray, GenericVector):
     def __init__(self, N):
         numpy.ndarray.__init__(self, N)
         self[:] = 0
     
     def array(self):
         return self[:]
+
+
+class PetscVector(GenericVector):
+    def __init__(self, N):
+        self._vec = PETSc.Vec().createSeq(N)
+    
+    def __setitem__(self, key, value):
+        self._vec.setValue(key, value)
+    
+    def __len__(self):
+        return self._vec.getSize()
+    
+    def array(self):
+        return self._vec.getArray()
 
 
 class LinearSolver(object):
@@ -195,15 +191,43 @@ class LinearSolver(object):
         A must be a Matrix, u and b must be Vectors
         """
         solver = self.solver
-        if solver is None:
-            solver = 'spsolve' if isinstance(A, ScipyMatrix) else 'numpy'
+        precon = self.preconditioner
         
-        if solver == 'spsolve':
-            import scipy.sparse.linalg
+        # Solve with scipy
+        if isinstance(A, ScipyMatrix):
+            solver = 'spsolve' if solver is None else solver
             u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
-        elif solver == 'numpy':
-            import numpy.linalg
+            return 1
+        
+        # Solve with petsc4py
+        elif isinstance(A, PetscMatrix):
+            assert isinstance(u, PetscVector)
+            assert isinstance(b, PetscVector)
+            solver = parameters['solver'] if solver is None else solver
+            precon = parameters['preconditioner'] if precon is None else precon
+            
+            # Finalize matrix
+            A.finalize()
+            
+            ksp = PETSc.KSP().create()
+            ksp.setOperators(A._mat)
+            ksp.setType(solver)
+            
+            pc = ksp.getPC()
+            pc.setType(precon)
+            
+            ksp.setTolerances(parameters['relative_tolerance'],
+                              parameters['absolute_tolerance'],
+                              parameters['divergence_limit'],
+                              parameters['max_iterations'])
+            ksp.solve(b._vec, u._vec)
+            
+            return ksp.getIterationNumber()
+        
+        # Solve with numpy
+        elif isinstance(A, NumpyMatrix):
             u[:] = numpy.linalg.solve(A.array(), b.array())
+            return 1
 
 
 def solve(A, u, b, *args):
@@ -212,4 +236,4 @@ def solve(A, u, b, *args):
     
     A must be a Matrix, u and b must be Vectors
     """
-    LinearSolver().solve(A, u, b)
+    return LinearSolver().solve(A, u, b)
