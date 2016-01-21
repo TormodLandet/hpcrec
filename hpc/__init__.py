@@ -10,7 +10,7 @@ parameters = {
     'divergence_limit': 10000,
     'max_iterations': 10000,
     'solver': 'gmres',
-    'preconditioner': 'hypre'
+    'preconditioner': 'bjacobi'
 }
 
 
@@ -38,3 +38,4 @@ from .polynomials import eval_phi
 from .assembly import assemble
 from .boundary_conditions import apply_bcs
 from .plotting import plot, interactive
+

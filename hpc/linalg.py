@@ -205,24 +205,39 @@ class LinearSolver(object):
             assert isinstance(b, PetscVector)
             solver = parameters['solver'] if solver is None else solver
             precon = parameters['preconditioner'] if precon is None else precon
+            petsc_options = {}
             
             # Finalize matrix
             A.finalize()
             
-            ksp = PETSc.KSP().create()
-            ksp.setOperators(A._mat)
-            ksp.setType(solver)
+            # Some preconditioners like jacobi, bjacobi, sor, asm, ilu, 
+            # cholesky etc work right out of the box. For others we need to
+            # do some setup. See i.e. cbc.block for examples of configuring
+            # PETSc preconditioners through petsc4py
+            if precon == 'hypre_amg':
+                # When using finite element discretisations boomerAMG works 
+                # very well for the Poisson equation, so we want to test this
+                # for the HPC method as well
+                precon = PETSc.PC.Type.HYPRE
+                petsc_options['pc_hypre_type']  = 'boomeramg'
             
-            pc = ksp.getPC()
-            pc.setType(precon)
+            with PetscOptions(petsc_options):
+                ksp = PETSc.KSP().create()
+                ksp.setOperators(A._mat)
+                ksp.setType(solver)
+                ksp.setTolerances(parameters['relative_tolerance'],
+                                  parameters['absolute_tolerance'],
+                                  parameters['divergence_limit'],
+                                  parameters['max_iterations'])
+                
+                pc = ksp.getPC()
+                pc.setType(precon)
+                pc.setFromOptions()
+                pc.setUp()
             
-            ksp.setTolerances(parameters['relative_tolerance'],
-                              parameters['absolute_tolerance'],
-                              parameters['divergence_limit'],
-                              parameters['max_iterations'])
-            ksp.solve(b._vec, u._vec)
-            
-            return ksp.getIterationNumber()
+                ksp.solve(b._vec, u._vec)
+        
+                return ksp.getIterationNumber()
         
         # Solve with numpy
         elif isinstance(A, NumpyMatrix):
@@ -237,3 +252,27 @@ def solve(A, u, b, *args):
     A must be a Matrix, u and b must be Vectors
     """
     return LinearSolver().solve(A, u, b)
+
+
+class PetscOptions(object):
+    def __init__(self, options):
+        """
+        PETSc options are global. This context manager handles
+        setting and resetting options to avoid clobbering the
+        global option database with non-default values
+        """
+        self.options = options
+
+    def __enter__(self):
+        if self.options:
+            self.orig_options = PETSc.Options().getAll()
+            for key, value in self.options.iteritems():
+                PETSc.Options().setValue(key, value)
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.options:
+            for key in self.options.iterkeys():
+                PETSc.Options().delValue(key)
+            for key, value in self.orig_options.iteritems():
+                PETSc.Options().setValue(key, value)
+
