@@ -1,4 +1,14 @@
-###############################################################################
+"""
+This is an implementation of the Harmonic Polynomial Cell method by
+Shao & Faltinsen
+
+(c) 2016 - Tormod Landet
+"""
+# Exception
+class HPCError(Exception):
+    pass
+
+
 # Global configuration ala FEniCS
 parameters = {
     # numpy, scipy, petsc or auto (which is numpy for small matrices)
@@ -14,7 +24,6 @@ parameters = {
 }
 
 
-###############################################################################
 # Timing utilities
 import time
 class Timer(object):
@@ -27,7 +36,23 @@ class Timer(object):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         t = time.time() - self.t_start
-        print 'DONE with %s in %.4f seconds' % (self.task, t) 
+        print 'DONE with %s in %.4f seconds' % (self.task, t)
+
+
+# Optional Cython module
+try:
+    import pyximport
+    pyximport.install()
+    del pyximport
+    has_cython = True
+except ImportError:
+    has_cython = False
+
+if has_cython:
+    from . import hpc_cython
+else:
+    hpc_cython = None
+del has_cython
 
 
 ###############################################################################

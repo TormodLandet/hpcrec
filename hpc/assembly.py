@@ -1,5 +1,4 @@
 from __future__ import division
-import numpy
 from .linalg import Matrix, Vector
 from .polynomials import eval_phi
 

@@ -1,6 +1,7 @@
 # encoding: utf8
 from __future__ import division
 import numpy
+from hpc import hpc_cython
 
 
 # Harmonic polynomials defined as follows: C x^ex y^ey => (C, ex, ey)
@@ -43,28 +44,32 @@ def eval_phi(domain, dof):
     gradient at a given dof
     """
     dof_neighbours = domain.dof_neighbours
+    dof_coordinates = domain.dof_coordinates
     N = dof_neighbours.shape[1]
-    neighbours = dof_neighbours[dof]
-    x0, y0 = domain.dof_coordinates[dof]
     M = numpy.zeros((N, N), float)
     
-    for i, dof_i in enumerate(neighbours):
-        x, y = domain.dof_coordinates[dof_i]
-        xr = x - x0
-        yr = y - y0
+    if hpc_cython is not None:
+        hpc_cython.setup_local_matrix(dof, dof_neighbours, dof_coordinates, M)
+    else:
+        x0, y0 = dof_coordinates[dof]
         
-        for j, poly in enumerate(HARMONIC_POLYNOMIALS_2D[:N]):
-            fij = 0
-            for C, ex, ey in poly:
-                fij += C * xr**ex * yr**ey
-            M[i,j] = fij
+        for i, dof_i in enumerate(dof_neighbours[dof]):
+            x, y = dof_coordinates[dof_i]
+            xr = x - x0
+            yr = y - y0
+            
+            for j, poly in enumerate(HARMONIC_POLYNOMIALS_2D[:N]):
+                fij = 0
+                for C, ex, ey in poly:
+                    fij += C * xr**ex * yr**ey
+                M[i,j] = fij
     
     try:
         C = numpy.linalg.inv(M)
     except:
         debug_local_matrix_errors(domain, dof, M)
     
-    return neighbours, C[0,:], C[1,:], C[2,:]
+    return dof_neighbours[dof], C[0,:], C[1,:], C[2,:]
 
 
 def debug_local_matrix_errors(domain, dof, M):
