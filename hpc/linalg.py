@@ -1,4 +1,4 @@
-from hpc import parameters
+from hpc import parameters, HPCError
 import numpy.linalg
 
 # Check for scipy
@@ -19,33 +19,31 @@ except:
     has_petsc = False
 
 
-DENSE_LIMIT = 1000
-
-
-def get_linalg_backend_type(N):
-    backend = parameters['linear_algebra_backend'] 
-    if backend != 'auto':
-        assert backend in ('scipy', 'petsc', 'numpy')
-        return backend 
+def get_linalg_backend_type():
+    available_backends = ['numpy']
+    if has_scipy: available_backends.append('scipy')
+    if has_petsc: available_backends.append('petsc') 
+    
+    param_backend = parameters['linear_algebra_backend'] 
+    if param_backend != 'auto':
+        if not param_backend in available_backends:
+            raise HPCError('Linear algebra backend %r not available. Select one of %s.' % \
+                           (param_backend, ', '.join(repr(b) for b in available_backends)))
+        return param_backend 
     
     if has_petsc:
-        sparse_backend = 'petsc'
+        return 'petsc'
     elif has_scipy:
-        sparse_backend = 'scipy'
+        return 'scipy'
     else:
-        sparse_backend = None
-    
-    if N <= DENSE_LIMIT or not sparse_backend:
         return 'numpy'
-    else:
-        return sparse_backend
 
 
 def Matrix(N, M):
     """
-    Try to make a smart selection of the matrix type to use
+    Get a matrix of the selected backend type
     """
-    backend = get_linalg_backend_type(N)
+    backend = get_linalg_backend_type()
     if backend == 'numpy':
         return NumpyMatrix(N, M)
     elif backend == 'scipy':
@@ -56,13 +54,26 @@ def Matrix(N, M):
 
 def Vector(N):
     """
-    Try to make a smart selection of the matrix type to use
+    Get a vector of the selected backend type 
     """
-    backend = get_linalg_backend_type(N)
+    backend = get_linalg_backend_type()
     if backend == 'petsc':
         return PetscVector(N)
     else:
         return NumpyVector(N)
+
+
+def LinearSolver(solver=None, preconditioner=None):
+    """
+    Get a linear equation solver of the selected backend type
+    """
+    backend = get_linalg_backend_type()
+    if backend == 'numpy':
+        return  NumpyLinearSolver(solver, preconditioner)
+    elif backend == 'scipy':
+        return ScipyLinearSolver(solver, preconditioner)
+    elif backend == 'petsc':
+        return PetscLinearSolver(solver, preconditioner)
 
 
 class GenericMatrix(object):
@@ -179,70 +190,93 @@ class PetscVector(GenericVector):
         return self._vec.getArray()
 
 
-class LinearSolver(object):
+class GenericLinearSolver(object):
     def __init__(self, solver=None, preconditioner=None):
         self.solver = solver
         self.preconditioner = None
-    
+
+
+class ScipyLinearSolver(GenericLinearSolver):
     def solve(self, A, u, b):
         """
-        Solve A u = b
+        Solve A u = b using SciPy sparse
         
         A must be a Matrix, u and b must be Vectors
         """
+        assert isinstance(A, ScipyMatrix)
+        solver = self.solver
+        solver = parameters['solver'] if solver is None else solver
+        
+        tol = min(parameters['absolute_tolerance'], parameters['relative_tolerance'])
+        
+        if solver == 'gmres':
+            u[:], info = scipy.sparse.linalg.gmres(A.csr_matrix, b.array(), tol=tol)
+            assert info == 0
+        elif solver == 'spsolve':
+            u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
+        return 1
+
+
+class PetscLinearSolver(GenericLinearSolver):
+    def solve(self, A, u, b):
+        """
+        Solve A u = b using PETSc
+        
+        A must be a Matrix, u and b must be Vectors
+        """
+        assert  isinstance(A, PetscMatrix)
+        assert isinstance(u, PetscVector)
+        assert isinstance(b, PetscVector)
         solver = self.solver
         precon = self.preconditioner
         
-        # Solve with scipy
-        if isinstance(A, ScipyMatrix):
-            solver = 'spsolve' if solver is None else solver
-            u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
-            return 1
+            
+        solver = parameters['solver'] if solver is None else solver
+        precon = parameters['preconditioner'] if precon is None else precon
+        petsc_options = {}
         
-        # Solve with petsc4py
-        elif isinstance(A, PetscMatrix):
-            assert isinstance(u, PetscVector)
-            assert isinstance(b, PetscVector)
-            solver = parameters['solver'] if solver is None else solver
-            precon = parameters['preconditioner'] if precon is None else precon
-            petsc_options = {}
-            
-            # Finalize matrix
-            A.finalize()
-            
-            # Some preconditioners like jacobi, bjacobi, sor, asm, ilu, 
-            # cholesky etc work right out of the box. For others we need to
-            # do some setup. See i.e. cbc.block for examples of configuring
-            # PETSc preconditioners through petsc4py
-            if precon == 'hypre_amg':
-                # When using finite element discretisations boomerAMG works 
-                # very well for the Poisson equation, so we want to test this
-                # for the HPC method as well
-                precon = PETSc.PC.Type.HYPRE
-                petsc_options['pc_hypre_type']  = 'boomeramg'
-            
-            with PetscOptions(petsc_options):
-                ksp = PETSc.KSP().create()
-                ksp.setOperators(A._mat)
-                ksp.setType(solver)
-                ksp.setTolerances(parameters['relative_tolerance'],
-                                  parameters['absolute_tolerance'],
-                                  parameters['divergence_limit'],
-                                  parameters['max_iterations'])
-                
-                pc = ksp.getPC()
-                pc.setType(precon)
-                pc.setFromOptions()
-                pc.setUp()
-            
-                ksp.solve(b._vec, u._vec)
+        # Finalize matrix
+        A.finalize()
         
-                return ksp.getIterationNumber()
+        # Some preconditioners like jacobi, bjacobi, sor, asm, ilu, 
+        # cholesky etc work right out of the box. For others we need to
+        # do some setup. See i.e. cbc.block for examples of configuring
+        # PETSc preconditioners through petsc4py
+        if precon == 'hypre_amg':
+            # When using finite element discretisations boomerAMG works 
+            # very well for the Poisson equation, so we want to test this
+            # for the HPC method as well
+            precon = PETSc.PC.Type.HYPRE
+            petsc_options['pc_hypre_type']  = 'boomeramg'
         
-        # Solve with numpy
-        elif isinstance(A, NumpyMatrix):
-            u[:] = numpy.linalg.solve(A.array(), b.array())
-            return 1
+        with PetscOptions(petsc_options):
+            ksp = PETSc.KSP().create()
+            ksp.setOperators(A._mat)
+            ksp.setType(solver)
+            ksp.setTolerances(parameters['relative_tolerance'],
+                              parameters['absolute_tolerance'],
+                              parameters['divergence_limit'],
+                              parameters['max_iterations'])
+            
+            pc = ksp.getPC()
+            pc.setType(precon)
+            pc.setFromOptions()
+            pc.setUp()
+        
+            ksp.solve(b._vec, u._vec)
+    
+            return ksp.getIterationNumber()
+
+
+class NumpyLinearSolver(object):
+    def solve(self, A, u, b):
+        """
+        Solve A u = b using numpy dense matrices
+        
+        A must be a Matrix, u and b must be Vectors
+        """
+        u[:] = numpy.linalg.solve(A.array(), b.array())
+        return 1
 
 
 def solve(A, u, b, *args):

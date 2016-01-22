@@ -191,8 +191,13 @@ if __name__ == '__main__':
     if args.preconditioner: hpc.parameters['preconditioner'] = args.preconditioner
     
     with hpc.Timer('Shoebox demo'):
-        shoebox_demo(N=args.N,
-                     L=args.L,
-                     show_plot=args.plot,
-                     neumann=args.neumann,
-                     fem=args.fem)
+        try:
+            shoebox_demo(N=args.N,
+                         L=args.L,
+                         show_plot=args.plot,
+                         neumann=args.neumann,
+                         fem=args.fem)
+        except hpc.HPCError as e:
+            print 'ERROR - '*9 + 'ERROR!!!\n'
+            print '   ', e 
+            print '\n' + 'ERROR - '*9 + 'ERROR!!!'
