@@ -62,9 +62,10 @@ def wavetank_demo(wave_tank_input, show_plot=True):
     Nt = wave_tank_input.Nt
     tvec = numpy.linspace(0, wave_tank_input.tmax, Nt)
     dt = tvec[1]
+    
     eta = numpy.zeros((Nt, Nf), float)
     phi_fs = numpy.zeros((Nt, Nf), float)
-    phi = numpy.zeros(Nd, float)
+    phi = hpc.Vector(Nd)
     for it in range(1, Nt):
         t = tvec[it]
         wm_ampl = wave_tank_input.wm_ampl
@@ -100,15 +101,6 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         
         #######################################################################
         
-        # Update free surface position (kinematic free surface condition)
-        for ie in range(Nf):
-            coord, dof = fs_info[ie]
-            neighbours, _coeffs, _coeffs_diffx, coeffs_diffy = hpc.eval_phi(domain, dof)
-            dphi_dy = 0
-            for nb, coeff in zip(neighbours, coeffs_diffy):
-                dphi_dy += coeff*phi[nb]
-            eta[it, ie] = eta[it-1,ie] + dt*dphi_dy
-            
         # Smoothing to avoid saw tooth patterns
         if it % 30:
             eta_smoothed = numpy.zeros(Nf, float)
@@ -123,6 +115,16 @@ def wavetank_demo(wave_tank_input, show_plot=True):
                     eta_smoothed[ie] = (eta[it,ie-2] + eta[it,ie-1] + eta[it,ie])/3
                 else:
                     eta_smoothed[ie] = (eta[it,ie-2] + eta[it,ie-1] + eta[it,ie] + eta[it,ie+1] + eta[it,ie+2])/5
+            #eta[it,:] = eta_smoothed#
+        
+        # Update free surface position (kinematic free surface condition)
+        for ie in range(Nf):
+            coord, dof = fs_info[ie]
+            neighbours, _coeffs, _coeffs_diffx, coeffs_diffy = hpc.eval_phi(domain, dof)
+            dphi_dy = 0
+            for nb, coeff in zip(neighbours, coeffs_diffy):
+                dphi_dy += coeff*phi[nb]
+            eta[it, ie] = eta[it-1,ie] + dt*dphi_dy
         
         # Update phi at free surface (dynamic free surface condition)
         g = wave_tank_input.g
@@ -194,6 +196,11 @@ if __name__ == '__main__':
                         help='Number of time steps')
     parser.add_argument('--plot', '-p', action='store_true',
                         help='show plots')
+    
+    parser.add_argument('--backend', choices=('auto', 'scipy', 'petsc', 'numpy'), default='auto')
+    parser.add_argument('--solver', default='')
+    parser.add_argument('--preconditioner', default='')
+    
     args = parser.parse_args()
     
     wti = WaveTankInput()
@@ -202,4 +209,9 @@ if __name__ == '__main__':
     wti.tmax = args.tmax
     wti.Nt = args.Nt
     
-    wavetank_demo(wti, show_plot=args.plot)
+    hpc.parameters['linear_algebra_backend'] = args.backend
+    if args.solver: hpc.parameters['solver'] = args.solver
+    if args.preconditioner: hpc.parameters['preconditioner'] = args.preconditioner
+    
+    with hpc.Timer('Wave tank demo'):
+        wavetank_demo(wti, show_plot=args.plot)

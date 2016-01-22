@@ -180,6 +180,9 @@ class PetscVector(GenericVector):
     def __init__(self, N):
         self._vec = PETSc.Vec().createSeq(N)
     
+    def __getitem__(self, key):
+        return self._vec.getValue(key) 
+    
     def __setitem__(self, key, value):
         self._vec.setValue(key, value)
     
