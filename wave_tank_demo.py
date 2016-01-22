@@ -48,9 +48,8 @@ def wavetank_demo(wave_tank_input, show_plot=True):
     # Sort free surface dofs and report locations
     fs_info.sort()
     fs_dofs = [dof for _coord, dof in fs_info]
+    fs_xpos = [coord[0] for coord, _dof in fs_info]
     Nf = len(fs_info)
-    for coord, dof in fs_info:
-        print 'FS dof %3d at (%6.2g, %6.2g)' % (dof, coord[0], coord[1])
     assert Nf > 5
     
     # Setup matrix and vector without boundary conditions
@@ -76,7 +75,7 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         # Print some info about the time step
         print 'Timestep %4d at t = %6.3f' % (it, tvec[it]),
         print ' '*iampl + '*' + ' '*(39 - iampl),
-        print 'min/max(eta) = % 6.3f %6.3f' % (eta[it-1].min(), eta[it-1].max()) 
+        print 'min/max(eta) = % 6.3f %6.3f' % (eta[it-1].min(), eta[it-1].max())
         
         # Update boundary conditions
         bcs = []
@@ -131,57 +130,33 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         for ie in range(Nf):
             phi_fs[it, ie] = phi_fs[it-1,ie] - dt*g*eta[it, ie]
     
+    save_results('result_wave_tank_demo.out', fs_xpos, tvec, eta)
+    
     if show_plot:
         from matplotlib import pyplot
         #pyplot.spy(A)
         #uhpc.plot(domain)
         #uhpc.plot(domain, phi)
-        fs_plot(fs_info, eta, tvec, 'Free surface elevation')
+        from plot_wave_tank_results import plot_free_surface
+        plot_free_surface(fs_xpos, eta, tvec, 'Free surface elevation')
         #fs_plot(fs_info, phi_fs, tvec, 'Free surface potential')
         pyplot.show()
 
 
-def fs_plot(fs_info, eta, tvec, title):
-    from matplotlib import pyplot
-    from matplotlib.widgets import Slider
-    
-    fig, ax = pyplot.subplots()
-    pyplot.subplots_adjust(bottom=0.25)
-    axcolor = 'lightgoldenrodyellow'
-    slider_ax = pyplot.axes([0.1, 0.1, 0.8, 0.03], axisbg=axcolor)
-    slider = Slider(slider_ax, 'Time', tvec[0], tvec[-1], valinit=tvec[0])
-    
-    xpos = [coord[0] for coord, _dof in fs_info]
-    xmin = xpos[0]
-    xmax = xpos[-1]
-    ymin = eta.min()
-    ymax = eta.max()
-    xdiff = xmax - xmin 
-    ydiff = ymax - ymin
-    xmin, xmax = xmin - 0.1*xdiff, xmax + 0.1*xdiff
-    ymin, ymax = ymin - 0.1*ydiff, ymax + 0.1*ydiff
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    ax.set_title(title)
-    
-    line, = ax.plot(xpos, eta[0])
-    
-    def update(val):
-        #xmin, xmax = ax.get_xlim()
-        #ymin, ymax = ax.get_ylim()
+def save_results(file_name, xpos, tvec, eta):
+    with open(file_name, 'wt') as out:
+        out.write('xpos %d\n' % len(xpos))
+        out.write(' '.join('% 14.8e' % v for v in xpos))
+        out.write('\n')
         
-        t = slider.val
-        it = numpy.argmin(abs(tvec - t))
-        line.set_ydata(eta[it])
+        out.write('tvec %d\n' % len(tvec))
+        out.write(' '.join('% 14.8e' % v for v in tvec))
+        out.write('\n')
         
-        #ax.set_xlim(xmin, xmax)
-        #ax.set_ylim(ymin, ymax)
-        #ax.legend(loc='lower right')
-        
-        fig.canvas.draw_idle()
-    
-    slider.on_changed(update)
-    slider.set_val(tvec[0])
+        out.write('eta %d %d\n' % eta.shape)
+        for row in eta:
+            out.write(' '.join('% 14.8e' % v for v in row))
+            out.write('\n')
 
 
 if __name__ == '__main__':
