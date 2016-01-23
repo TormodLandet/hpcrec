@@ -180,8 +180,12 @@ class PetscVector(GenericVector):
     def __init__(self, N):
         self._vec = PETSc.Vec().createSeq(N)
     
+    def finalize(self):
+        self._vec.assemblyBegin()
+        self._vec.assemblyEnd()
+    
     def __getitem__(self, key):
-        return self._vec.getValue(key) 
+        return self._vec.getValue(key)
     
     def __setitem__(self, key, value):
         self._vec.setValue(key, value)
@@ -214,9 +218,18 @@ class ScipyLinearSolver(GenericLinearSolver):
         
         if solver == 'gmres':
             u[:], info = scipy.sparse.linalg.gmres(A.csr_matrix, b.array(), tol=tol)
-            assert info == 0
+            assert info == 0, 'Got scipy gmres error %d' % info
+        elif solver == 'minres':
+            u[:], info = scipy.sparse.linalg.minres(A.csr_matrix, b.array(), tol=tol)
+            assert info == 0, 'Got scipy minres error %d' % info
+        elif solver == 'bcgs':
+            u[:], info = scipy.sparse.linalg.bicgstab(A.csr_matrix, b.array(), tol=tol)
+            assert info == 0, 'Got scipy bicgstab error %d' % info
         elif solver == 'spsolve':
             u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
+        else:
+            raise HPCError('Unsupported SciPy solver %r' % solver)
+        
         return 1
 
 
@@ -238,8 +251,16 @@ class PetscLinearSolver(GenericLinearSolver):
         precon = parameters['preconditioner'] if precon is None else precon
         petsc_options = {}
         
-        # Finalize matrix
+        # Finalize matrix and vector
         A.finalize()
+        b.finalize()
+
+        # Direct solvers are implemented as preconditioners
+        setup_pc = lambda pc: None
+        if solver == 'mumps':
+            solver = 'preonly'
+            precon = 'lu'
+            setup_pc = lambda pc: pc.setFactorSolverPackage('mumps')
         
         # Some preconditioners like jacobi, bjacobi, sor, asm, ilu, 
         # cholesky etc work right out of the box. For others we need to
@@ -263,15 +284,19 @@ class PetscLinearSolver(GenericLinearSolver):
             
             pc = ksp.getPC()
             pc.setType(precon)
+            setup_pc(pc)
             pc.setFromOptions()
             pc.setUp()
-        
+            
             ksp.solve(b._vec, u._vec)
-    
+            conv_code = ksp.getConvergedReason()
+            if not conv_code > 0:
+                raise PetscError(conv_code=conv_code)
+            
             return ksp.getIterationNumber()
 
 
-class NumpyLinearSolver(object):
+class NumpyLinearSolver(GenericLinearSolver):
     def solve(self, A, u, b):
         """
         Solve A u = b using numpy dense matrices
@@ -312,4 +337,23 @@ class PetscOptions(object):
                 PETSc.Options().delValue(key)
             for key, value in self.orig_options.iteritems():
                 PETSc.Options().setValue(key, value)
+
+class PetscError(Exception):
+    def __init__(self, message=None, conv_code=None):
+        if conv_code is not None:
+            conv_reason = get_petsc_convergence_reason(conv_code)
+            if conv_reason is None:
+                conv_reason = 'UNKNOWN REASON!'
+            message = 'KSP status %s' % conv_reason
+        Exception.__init__(self, message)
+
+def get_petsc_convergence_reason(conv_code):
+    """
+    Translate PETSc's numerical convergence codes to strings
+    """
+    for attr in dir(PETSc.KSP.ConvergedReason):
+        if attr.startswith('DIVERGED') or attr.startswith('CONVERGED'):
+            val = getattr(PETSc.KSP.ConvergedReason, attr)
+            if val == conv_code:
+                return attr
 
