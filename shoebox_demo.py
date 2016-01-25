@@ -64,7 +64,7 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fe
     
     if show_plot:
         from matplotlib import pyplot
-        pyplot.spy(A)
+        pyplot.spy(A.array())
         hpc.plot(domain)
         hpc.plot(domain, phi_h)
         pyplot.show()

@@ -6,18 +6,22 @@ import hpc
 
 
 class WaveTankInput(object):
+    # Geometry
     N = None
     L = None
-    
     h = 1
-    k = 1
-    g = 9.81
     
+    # Timestepping
     tmax = 1
     Nt = 100
     
-    wm_ampl = 0.1
-    wm_freq = 5
+    # Wave maker input
+    wm_ampls = [0.1]
+    wm_freqs = [5.0]
+    wm_phases = [0.0]
+    
+    # Physical constants
+    g = 9.81
 
 
 def wavetank_demo(wave_tank_input, show_plot=True):
@@ -36,47 +40,58 @@ def wavetank_demo(wave_tank_input, show_plot=True):
     for dof, coord in enumerate(domain.dof_coordinates):
         if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
             x, y = coord
-            if y + 1e-8 > h:
-                fs_info.append((tuple(coord), dof))
-            elif y < 1e-8:
-                nm_info.append(('Ny', dof))
-            elif x < 1e-8:
+            if x < 1e-8:
                 wm_info.append((coord, dof))
             elif x > L*h - 1e-8:
                 nm_info.append(('Nx', dof))
+            elif y > h - 1e-8:
+                fs_info.append((tuple(coord), dof))
+            else:
+                assert y < 1e-8
+                nm_info.append(('Ny', dof))
     
-    # Sort free surface dofs and report locations
+    # Sort and store free surface dofs
     fs_info.sort()
     fs_dofs = [dof for _coord, dof in fs_info]
     fs_xpos = [coord[0] for coord, _dof in fs_info]
     Nf = len(fs_info)
     assert Nf > 5
     
-    # Setup matrix and vector without boundary conditions
+    # Assemble the system matrix and rhs vector without boundary conditions
     A, b = hpc.assemble(domain)
     Nd = len(b)
     print 'Number of unknowns: %d' % len(b)
+    solver = hpc.LinearSolver()
+    solver.reuse_preconditioner = True
     
     # Run time loop
     Nt = wave_tank_input.Nt
     tvec = numpy.linspace(0, wave_tank_input.tmax, Nt)
     dt = tvec[1]
-    
     eta = numpy.zeros((Nt, Nf), float)
     phi_fs = numpy.zeros((Nt, Nf), float)
     phi = hpc.Vector(Nd)
     for it in range(1, Nt):
         t = tvec[it]
-        wm_ampl = wave_tank_input.wm_ampl
-        wm_freq = wave_tank_input.wm_freq
-        ampl = wm_ampl*sin(wm_freq*t)
-        iampl = int(round(39*(ampl + wm_ampl)/(2*wm_ampl)))
+        
+        # Calculate wave maker amplitude at y = h (still water height)
+        wm_pos = 0
+        for ia, wm_ampl in enumerate(wave_tank_input.wm_ampls):  
+            wm_freq = wave_tank_input.wm_freqs[ia]
+            wm_phase = wave_tank_input.wm_phases[ia]
+            wm_pos += wm_ampl*sin(wm_freq*t + wm_phase)
+        
+        # Wave maker visualization
+        max_ampl = sum(abs(a) for a in wave_tank_input.wm_ampls)
+        iampl = int(round(39*(wm_pos + max_ampl)/(2*max_ampl)))
+        wm_vis = ' '*iampl + '.' + ' '*(39 - iampl)
         
         # Print some info about the time step
         print 'Timestep %4d at t = %6.3f' % (it, tvec[it]),
-        print ' '*iampl + '*' + ' '*(39 - iampl),
+        print wm_vis,
         print 'min/max(eta) = % 6.3f %6.3f' % (eta[it-1].min(), eta[it-1].max())
         
+        #######################################################################
         # Update boundary conditions
         bcs = []
         
@@ -86,20 +101,27 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         
         # Boundary conditions on the wave maker
         for coord, dof in wm_info:
-            speed = coord[1]/h * ampl
+            x, y = coord
+            speed = y/h * wm_pos
             bcs.append(('Nx', dof, speed))
         
         # Boundary conditions on the rest of the Neumann boundary
-        bcs += [(bc_type, dof, 0) for bc_type, dof in nm_info]
-        
-        # Apply boundary conditions
-        hpc.apply_bcs(domain, A, b, bcs)
-        
-        # Solve
-        hpc.solve(A, phi, b)
+        bcs += [(bc_type, dof, 0.0) for bc_type, dof in nm_info]
         
         #######################################################################
+        # Apply boundary conditions
+        if it == 1:
+            hpc.apply_bcs(domain, A, b, bcs)
+        else:
+            for _bc_type, dof, value in bcs:
+                b[dof] = value
         
+        # Solve linear HPC equation system
+        phi = hpc.Vector(Nd)
+        solver.solve(A, phi, b)
+        phi = phi.array()
+        
+        #######################################################################
         # Smoothing to avoid saw tooth patterns
         if it % 30:
             eta_smoothed = numpy.zeros(Nf, float)
@@ -115,7 +137,8 @@ def wavetank_demo(wave_tank_input, show_plot=True):
                 else:
                     eta_smoothed[ie] = (eta[it,ie-2] + eta[it,ie-1] + eta[it,ie] + eta[it,ie+1] + eta[it,ie+2])/5
             #eta[it,:] = eta_smoothed#
-        
+            
+        #######################################################################
         # Update free surface position (kinematic free surface condition)
         for ie in range(Nf):
             coord, dof = fs_info[ie]
@@ -173,7 +196,7 @@ if __name__ == '__main__':
                         help='show plots')
     
     parser.add_argument('--backend', choices=('auto', 'scipy', 'petsc', 'numpy'), default='auto')
-    parser.add_argument('--solver', default='')
+    parser.add_argument('--solver', default='default_direct')
     parser.add_argument('--preconditioner', default='')
     
     args = parser.parse_args()
@@ -185,7 +208,7 @@ if __name__ == '__main__':
     wti.Nt = args.Nt
     
     hpc.parameters['linear_algebra_backend'] = args.backend
-    if args.solver: hpc.parameters['solver'] = args.solver
+    hpc.parameters['solver'] = args.solver
     if args.preconditioner: hpc.parameters['preconditioner'] = args.preconditioner
     
     with hpc.Timer('Wave tank demo'):

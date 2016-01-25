@@ -94,7 +94,7 @@ class ScipyMatrix(GenericMatrix):
         from scipy.sparse import lil_matrix
         self.shape = (N, M)
         self._lil = lil_matrix(self.shape)
-        self._csr = None
+        self._csr = self._csc = None
     
     def array(self):
         return self._lil.toarray()
@@ -105,6 +105,12 @@ class ScipyMatrix(GenericMatrix):
             self._csr = self._lil.tocsr()
         return self._csr
     
+    @property
+    def csc_matrix(self):
+        if self._csc is None:
+            self._csc = self._lil.tocsc()
+        return self._csc
+    
     def __setitem__(self, key, value):
         """
         Set an item (with global dof indexes)
@@ -112,8 +118,8 @@ class ScipyMatrix(GenericMatrix):
         i, j = key
         self._lil[i,j] = value
         
-        # Invalidate cached CSR matrix
-        self._csr = None
+        # Invalidate cached matrices
+        self._csr = self._csc = None
     
     def __repr__(self, *args, **kwargs):
         return '<ScipyMatrix %d by %d>' % self.shape
@@ -201,6 +207,7 @@ class GenericLinearSolver(object):
     def __init__(self, solver=None, preconditioner=None):
         self.solver = solver
         self.preconditioner = None
+        self.reuse_preconditioner = False
 
 
 class ScipyLinearSolver(GenericLinearSolver):
@@ -213,6 +220,9 @@ class ScipyLinearSolver(GenericLinearSolver):
         assert isinstance(A, ScipyMatrix)
         solver = self.solver
         solver = parameters['solver'] if solver is None else solver
+        
+        if solver == 'default_direct':
+            solver = 'splu'
         
         tol = min(parameters['absolute_tolerance'], parameters['relative_tolerance'])
         
@@ -227,6 +237,10 @@ class ScipyLinearSolver(GenericLinearSolver):
             assert info == 0, 'Got scipy bicgstab error %d' % info
         elif solver == 'spsolve':
             u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
+        elif solver == 'splu':
+            if not self.reuse_preconditioner or not hasattr(self, 'lu'):
+                self.lu = scipy.sparse.linalg.splu(A.csc_matrix)
+            u[:] = self.lu.solve(b)
         else:
             raise HPCError('Unsupported SciPy solver %r' % solver)
         
@@ -234,34 +248,32 @@ class ScipyLinearSolver(GenericLinearSolver):
 
 
 class PetscLinearSolver(GenericLinearSolver):
-    def solve(self, A, u, b):
+    def setup(self, A):
         """
-        Solve A u = b using PETSc
+        Setup the solver
+        """
+        if hasattr(self, 'ksp'):
+            # Already set up
+            return
         
-        A must be a Matrix, u and b must be Vectors
-        """
-        assert  isinstance(A, PetscMatrix)
-        assert isinstance(u, PetscVector)
-        assert isinstance(b, PetscVector)
+        assert isinstance(A, PetscMatrix)
         solver = self.solver
         precon = self.preconditioner
         
-            
         solver = parameters['solver'] if solver is None else solver
         precon = parameters['preconditioner'] if precon is None else precon
         petsc_options = {}
         
-        # Finalize matrix and vector
-        A.finalize()
-        b.finalize()
-
+        if solver == 'default_direct':
+            solver = 'mumps'
+        
         # Direct solvers are implemented as preconditioners
         setup_pc = lambda pc: None
         if solver == 'mumps':
             solver = 'preonly'
             precon = 'lu'
             setup_pc = lambda pc: pc.setFactorSolverPackage('mumps')
-        
+            
         # Some preconditioners like jacobi, bjacobi, sor, asm, ilu, 
         # cholesky etc work right out of the box. For others we need to
         # do some setup. See i.e. cbc.block for examples of configuring
@@ -275,7 +287,6 @@ class PetscLinearSolver(GenericLinearSolver):
         
         with PetscOptions(petsc_options):
             ksp = PETSc.KSP().create()
-            ksp.setOperators(A._mat)
             ksp.setType(solver)
             ksp.setTolerances(parameters['relative_tolerance'],
                               parameters['absolute_tolerance'],
@@ -286,14 +297,40 @@ class PetscLinearSolver(GenericLinearSolver):
             pc.setType(precon)
             setup_pc(pc)
             pc.setFromOptions()
-            pc.setUp()
-            
-            ksp.solve(b._vec, u._vec)
-            conv_code = ksp.getConvergedReason()
-            if not conv_code > 0:
-                raise PetscError(conv_code=conv_code)
-            
-            return ksp.getIterationNumber()
+            pc.setReusePreconditioner(self.reuse_preconditioner)
+        
+        self.ksp = ksp
+        self.pc = pc
+    
+    def solve(self, A, u, b):
+        """
+        Solve A u = b using PETSc
+        
+        A must be a Matrix, u and b must be Vectors
+        """
+        if self.solver == 'hpc_richardson':
+            return hpc_richardson(A, u, b)
+        
+        self.setup(A)
+        assert isinstance(u, PetscVector)
+        assert isinstance(b, PetscVector)
+        
+        # Finalize matrix and vector
+        A.finalize()
+        b.finalize()
+        
+        # Solve the linear system
+        ksp, pc = self.ksp, self.pc
+        ksp.setOperators(A._mat)
+        pc.setUp()
+        ksp.solve(b._vec, u._vec)
+        
+        # Check that the solver converged
+        conv_code = ksp.getConvergedReason()
+        if not conv_code > 0:
+            raise PetscError(conv_code=conv_code)
+        
+        return ksp.getIterationNumber()
 
 
 class NumpyLinearSolver(GenericLinearSolver):
@@ -338,6 +375,7 @@ class PetscOptions(object):
             for key, value in self.orig_options.iteritems():
                 PETSc.Options().setValue(key, value)
 
+
 class PetscError(Exception):
     def __init__(self, message=None, conv_code=None):
         if conv_code is not None:
@@ -346,6 +384,7 @@ class PetscError(Exception):
                 conv_reason = 'UNKNOWN REASON!'
             message = 'KSP status %s' % conv_reason
         Exception.__init__(self, message)
+
 
 def get_petsc_convergence_reason(conv_code):
     """
@@ -357,3 +396,27 @@ def get_petsc_convergence_reason(conv_code):
             if val == conv_code:
                 return attr
 
+
+def hpc_richardson(A, u, b, tol=1e-8, maxiter=1000):
+    """
+    An extremely basic implementation of Richardson iterations for solving
+    Au=b for PETSc matrices. Used for debugging only
+    """
+    assert isinstance(A, PetscMatrix)
+    r = PetscVector(len(u))
+    
+    A = A._mat
+    u = u._vec
+    b = b._vec
+    r = r._vec
+    
+    for i in range(maxiter):
+        A.mult(u, r)
+        r.axpy(-1.0, b)
+        #print i, r.array
+        u.axpy(-1.0, r)
+        norm = numpy.linalg.norm(r.array)
+        if norm < tol:
+            return i+1
+    else:
+        raise HPCError('HPC richardson iteration did not converge. Norm = %r' % norm)
