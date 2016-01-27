@@ -80,10 +80,16 @@ class GenericMatrix(object):
     def __init__(self):
         raise NotImplementedError('You cannot instantiate a GenericMatrix')
     
+    def finalize(self):
+        pass
+
 
 class GenericVector(object):
     def __init__(self):
         raise NotImplementedError('You cannot instantiate a GenericVector')
+    
+    def finalize(self):
+        pass
 
 
 class ScipyMatrix(GenericMatrix):
@@ -180,7 +186,7 @@ class NumpyVector(numpy.ndarray, GenericVector):
     
     def array(self):
         return self[:]
-
+    
 
 class PetscVector(GenericVector):
     def __init__(self, N):

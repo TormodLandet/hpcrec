@@ -64,7 +64,7 @@ def read_wave_tank__out(file_name):
 if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1:
-        file_name = sys.argv
+        file_name = sys.argv[1]
     else:
         file_name = 'result_wave_tank_demo.out'
     
