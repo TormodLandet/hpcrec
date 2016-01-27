@@ -5,7 +5,7 @@ import hpc
 from math import cosh, sinh, sin, cos, pi
 
 
-def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fem=0):
+def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fem=0):
     print 'Calculating shoebox with N=%d, L=%d' % (N, L)
     
     # Create geometry
@@ -19,18 +19,24 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fe
     dofs_layer4 = get_dofs(domain.dof_coordinates, h * (N-3)/N)
     
     # Apply refinement
-    if refine:
-        Nd = len(domain.dof_coordinates)
-        alpha = 1
-        beta_x = 1.0
-        beta_y = 0.0
-        for i in range(Nd):
-            x, y = domain.dof_coordinates[i]
-            xc = L/2*(1 - cos(pi*x/L)**alpha)
-            yc = h/2*(1 - cos(pi*y/h)**alpha)
-            domain.dof_coordinates[i] = (beta_x*xc + (1-beta_x)*x,
-                                            beta_y*yc + (1-beta_y)*y)
+    Nd = len(domain.dof_coordinates)
+    alpha = 1
+    beta_x = 0.0
+    beta_y = refine_y
+    for i in range(Nd):
+        x, y = domain.dof_coordinates[i]
+        #xc = L/2*(1 - cos(pi*x/L)**alpha)
+        #yc = h/2*(1 - cos(pi*y/h)**alpha)
+        xc = L*sin(pi*x/L/2)**alpha
+        yc = h*sin(pi*y/h/2)**alpha
+        domain.dof_coordinates[i] = (beta_x*xc + (1-beta_x)*x,
+                                        beta_y*yc + (1-beta_y)*y)
     
+    # Get distances between layers
+    dy1 = domain.dof_coordinates[dofs_layer1[0]][1] - domain.dof_coordinates[dofs_layer2[0]][1]
+    dy2 = domain.dof_coordinates[dofs_layer2[0]][1] - domain.dof_coordinates[dofs_layer3[0]][1]
+    dy3 = domain.dof_coordinates[dofs_layer3[0]][1] - domain.dof_coordinates[dofs_layer4[0]][1]
+
     # Assemble global system
     with hpc.Timer('Assemble'):
         if fem > 0:
@@ -76,10 +82,28 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fe
     phi_layer_2 = phi_h[dofs_layer2]
     phi_layer_3 = phi_h[dofs_layer3]
     phi_layer_4 = phi_h[dofs_layer4]
-    dy = h/N
-    d_phi_dy_fdm1 = (phi_layer_1 - phi_layer_2)/dy
-    d_phi_dy_fdm2 = (3*phi_layer_1 - 4*phi_layer_2 + phi_layer_3)/(2*dy)
-    d_phi_dy_fdm3 = (11*phi_layer_1 - 18*phi_layer_2 + 9*phi_layer_3 - 2*phi_layer_4)/(6*dy)
+    if dy1 == dy2:
+        dy = dy1
+        d_phi_dy_fdm1 = (phi_layer_1 - phi_layer_2)/dy
+        d_phi_dy_fdm2 = (3*phi_layer_1 - 4*phi_layer_2 + phi_layer_3)/(2*dy)
+        d_phi_dy_fdm3 = (11*phi_layer_1 - 18*phi_layer_2 + 9*phi_layer_3 - 2*phi_layer_4)/(6*dy)
+    else:
+        # Sympy derived expresions for dy.. != dy..
+        d_phi_dy_fdm1 = (phi_layer_1 - phi_layer_2)/dy1
+        d_phi_dy_fdm2 = (2*phi_layer_1*dy1*dy2 + phi_layer_1*dy2**2 - phi_layer_2*dy1**2 - 2*phi_layer_2*dy1*dy2 - 
+                         phi_layer_2*dy2**2 + phi_layer_3*dy1**2)/(dy1*dy2*(dy1 + dy2))
+        d_phi_dy_fdm3 = (3*phi_layer_1*dy1**2*dy2**2*dy3 + 3*phi_layer_1*dy1**2*dy2*dy3**2 + 4*phi_layer_1*dy1*dy2**3*dy3 + 
+                         6*phi_layer_1*dy1*dy2**2*dy3**2 + 2*phi_layer_1*dy1*dy2*dy3**3 + phi_layer_1*dy2**4*dy3 + 
+                         2*phi_layer_1*dy2**3*dy3**2 + phi_layer_1*dy2**2*dy3**3 - phi_layer_2*dy1**4*dy3 - 
+                         4*phi_layer_2*dy1**3*dy2*dy3 - 2*phi_layer_2*dy1**3*dy3**2 - 6*phi_layer_2*dy1**2*dy2**2*dy3 - 
+                         6*phi_layer_2*dy1**2*dy2*dy3**2 - phi_layer_2*dy1**2*dy3**3 - 4*phi_layer_2*dy1*dy2**3*dy3 - 
+                         6*phi_layer_2*dy1*dy2**2*dy3**2 - 2*phi_layer_2*dy1*dy2*dy3**3 - phi_layer_2*dy2**4*dy3 - 
+                         2*phi_layer_2*dy2**3*dy3**2 - phi_layer_2*dy2**2*dy3**3 + phi_layer_3*dy1**4*dy2 + 
+                         phi_layer_3*dy1**4*dy3 + 2*phi_layer_3*dy1**3*dy2**2 + 4*phi_layer_3*dy1**3*dy2*dy3 + 
+                         2*phi_layer_3*dy1**3*dy3**2 + phi_layer_3*dy1**2*dy2**3 + 3*phi_layer_3*dy1**2*dy2**2*dy3 + 
+                         3*phi_layer_3*dy1**2*dy2*dy3**2 + phi_layer_3*dy1**2*dy3**3 - phi_layer_4*dy1**4*dy2 - 
+                         2*phi_layer_4*dy1**3*dy2**2 - phi_layer_4*dy1**2*dy2**3)/(dy1*dy2*dy3*(dy1**2*dy2 + dy1**2*dy3 + 
+                         2*dy1*dy2**2 + 3*dy1*dy2*dy3 + dy1*dy3**2 + dy2**3 + 2*dy2**2*dy3 + dy2*dy3**2))
     
     # Print the errors
     print 'Error phi          : %15.8e' % numpy.linalg.norm(phi_h - phi_a)
@@ -88,18 +112,19 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False, fe
     print 'Error d_phi_dy FDM2: %15.8e' % numpy.linalg.norm(d_phi_dy_fdm2 - d_phi_dy_a)
     print 'Error d_phi_dy FDM3: %15.8e' % numpy.linalg.norm(d_phi_dy_fdm3 - d_phi_dy_a)
     
-    from matplotlib import pyplot
-    pyplot.plot(d_phi_dy_a, c='k', label='Analytical')
-    pyplot.plot(d_phi_dy_h, label='Numerical')
-    pyplot.plot(d_phi_dy_fdm1, label='FDM 1')
-    pyplot.plot(d_phi_dy_fdm2, label='FDM 2')
-    pyplot.plot(d_phi_dy_fdm3, label='FDM 3')
-    pyplot.legend(loc='best')
-    pyplot.show()
+    if False:
+        from matplotlib import pyplot
+        pyplot.plot(d_phi_dy_a, c='k', label='Analytical')
+        pyplot.plot(d_phi_dy_h, label='Numerical')
+        pyplot.plot(d_phi_dy_fdm1, label='FDM 1')
+        pyplot.plot(d_phi_dy_fdm2, label='FDM 2')
+        pyplot.plot(d_phi_dy_fdm3, label='FDM 3')
+        pyplot.legend(loc='best')
+        pyplot.show()
     
     if show_plot:
         from matplotlib import pyplot
-        pyplot.spy(A.array())
+        pyplot.spy(A)
         hpc.plot(domain)
         hpc.plot(domain, phi_h)
         pyplot.show()
@@ -162,7 +187,9 @@ def shoebox_demo_hpc(domain, L, k, h, dofs_layer1, neumann=False):
         
         return phi_h.array(), d_phi_dy_h
     
-    return A, b, solve 
+    A.finalize()
+    b.finalize()
+    return A.array(), b.array(), solve 
 
 
 def shoebox_demo_fem(domain, order, k, h, dofs_layer1, neumann=False):
@@ -249,6 +276,8 @@ if __name__ == '__main__':
                         help='include Neumann boundaries')
     parser.add_argument('--fem', '-f', type=int, default=0,
                         help='use FEM instead of HPC (specify order of method as argument)')
+    parser.add_argument('--refine_y', type=float, default=0.0,
+                        help='refine the mesh vertically by by ammount 0 to 1')
     
     parser.add_argument('--backend', choices=('auto', 'scipy', 'petsc', 'numpy'), default='auto')
     parser.add_argument('--solver', default='')
@@ -266,6 +295,7 @@ if __name__ == '__main__':
                          L=args.L,
                          show_plot=args.plot,
                          neumann=args.neumann,
+                         refine_y=args.refine_y,
                          fem=args.fem)
         except hpc.HPCError as e:
             print 'ERROR - '*9 + 'ERROR!!!\n'
