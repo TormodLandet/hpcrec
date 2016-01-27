@@ -1,6 +1,7 @@
 # encoding: utf8
 from __future__ import division
-from math import sin
+from math import sin, cos, pi
+import cPickle as pickle
 import numpy
 import hpc
 
@@ -10,13 +11,15 @@ class WaveTankInput(object):
     N = None
     L = None
     h = 1
+    refine_y = 1.0
     
     # Timestepping
     tmax = 1
+    tramp = 0.1
     Nt = 100
     
     # Wave maker input
-    wm_ampls = [0.1]
+    wm_ampls = [0.01]
     wm_freqs = [5.0]
     wm_phases = [0.0]
     
@@ -32,6 +35,14 @@ def wavetank_demo(wave_tank_input, show_plot=True):
     
     # Setup geometry
     domain = hpc.rectangle_domain((0, 0), (L, h), N*L//h, N)
+    
+    # Refine the mesh towards the free surface
+    Nd = len(domain.dof_coordinates)
+    beta_y = wave_tank_input.refine_y
+    for i in range(Nd):
+        _, y = domain.dof_coordinates[i]
+        yc = h*sin(pi*y/h/2)
+        domain.dof_coordinates[i][1] = beta_y*yc + (1-beta_y)*y
     
     # Get boundary info
     fs_info = [] # Free surface
@@ -75,15 +86,17 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         t = tvec[it]
         
         # Calculate wave maker amplitude at y = h (still water height)
-        wm_pos = 0
+        wm_speed = 0
+        max_speed = 0
+        ramp = min(t/wti.tramp, 1)
         for ia, wm_ampl in enumerate(wave_tank_input.wm_ampls):  
             wm_freq = wave_tank_input.wm_freqs[ia]
             wm_phase = wave_tank_input.wm_phases[ia]
-            wm_pos += wm_ampl*sin(wm_freq*t + wm_phase)
+            wm_speed += wm_freq*wm_ampl*cos(wm_freq*t + wm_phase)*ramp
+            max_speed += wm_freq*wm_ampl
         
         # Wave maker visualization
-        max_ampl = sum(abs(a) for a in wave_tank_input.wm_ampls)
-        iampl = int(round(39*(wm_pos + max_ampl)/(2*max_ampl)))
+        iampl = int(round(39*(wm_speed + max_speed)/(2*max_speed)))
         wm_vis = ' '*iampl + '.' + ' '*(39 - iampl)
         
         # Print some info about the time step
@@ -102,7 +115,7 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         # Boundary conditions on the wave maker
         for coord, dof in wm_info:
             x, y = coord
-            speed = y/h * wm_pos
+            speed = y/h * wm_speed
             bcs.append(('Nx', dof, speed))
         
         # Boundary conditions on the rest of the Neumann boundary
@@ -153,7 +166,7 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         for ie in range(Nf):
             phi_fs[it, ie] = phi_fs[it-1,ie] - dt*g*eta[it, ie]
     
-    save_results('result_wave_tank_demo.out', fs_xpos, tvec, eta)
+    save_results('result_wave_tank_demo.out', wave_tank_input, fs_xpos, tvec, eta)
     
     if show_plot:
         from matplotlib import pyplot
@@ -166,20 +179,13 @@ def wavetank_demo(wave_tank_input, show_plot=True):
         pyplot.show()
 
 
-def save_results(file_name, xpos, tvec, eta):
-    with open(file_name, 'wt') as out:
-        out.write('xpos %d\n' % len(xpos))
-        out.write(' '.join('% 14.8e' % v for v in xpos))
-        out.write('\n')
-        
-        out.write('tvec %d\n' % len(tvec))
-        out.write(' '.join('% 14.8e' % v for v in tvec))
-        out.write('\n')
-        
-        out.write('eta %d %d\n' % eta.shape)
-        for row in eta:
-            out.write(' '.join('% 14.8e' % v for v in row))
-            out.write('\n')
+def save_results(file_name, wave_tank_input, xpos, tvec, eta):
+    data = {'wave_tank_input': wave_tank_input,
+            'xpos': xpos,
+            'tvec': tvec,
+            'eta': eta}
+    with open(file_name, 'wb') as out:
+        pickle.dump(data, out, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 if __name__ == '__main__':
@@ -206,6 +212,7 @@ if __name__ == '__main__':
     wti.L = args.L
     wti.tmax = args.tmax
     wti.Nt = args.Nt
+    wti.tramp = args.tmax/10
     
     hpc.parameters['linear_algebra_backend'] = args.backend
     hpc.parameters['solver'] = args.solver

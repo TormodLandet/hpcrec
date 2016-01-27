@@ -18,25 +18,23 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fe
     dofs_layer3 = get_dofs(domain.dof_coordinates, h * (N-2)/N)
     dofs_layer4 = get_dofs(domain.dof_coordinates, h * (N-3)/N)
     
-    # Apply refinement
+    # Apply refinement towwards the top boundary
     Nd = len(domain.dof_coordinates)
     alpha = 1
     beta_x = 0.0
     beta_y = refine_y
     for i in range(Nd):
         x, y = domain.dof_coordinates[i]
-        #xc = L/2*(1 - cos(pi*x/L)**alpha)
-        #yc = h/2*(1 - cos(pi*y/h)**alpha)
         xc = L*sin(pi*x/L/2)**alpha
         yc = h*sin(pi*y/h/2)**alpha
         domain.dof_coordinates[i] = (beta_x*xc + (1-beta_x)*x,
-                                        beta_y*yc + (1-beta_y)*y)
+                                     beta_y*yc + (1-beta_y)*y)
     
     # Get distances between layers
     dy1 = domain.dof_coordinates[dofs_layer1[0]][1] - domain.dof_coordinates[dofs_layer2[0]][1]
     dy2 = domain.dof_coordinates[dofs_layer2[0]][1] - domain.dof_coordinates[dofs_layer3[0]][1]
     dy3 = domain.dof_coordinates[dofs_layer3[0]][1] - domain.dof_coordinates[dofs_layer4[0]][1]
-
+    
     # Assemble global system
     with hpc.Timer('Assemble'):
         if fem > 0:
