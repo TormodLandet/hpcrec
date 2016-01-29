@@ -20,35 +20,68 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
     # Find coupled dofs
     dofs1 = []
     for dof, coord in enumerate(domain1.dof_coordinates): 
-        if coord[0] > L - 1e-8 and coord[1] > 1e-8 and coord[1] < h - 1e-8:
+        if coord[0] > L - 1e-8:# and coord[1] > 1e-8 and coord[1] < h - 1e-8:
             dofs1.append(dof)
     dofs2 = []
     for dof, coord in enumerate(domain2.dof_coordinates): 
-        if coord[0] < L + 1e-8 and coord[1] > 1e-8 and coord[1] < h - 1e-8:
+        if coord[0] < L + 1e-8:# and coord[1] > 1e-8 and coord[1] < h - 1e-8:
             dofs2.append(dof)
     
     dofs1.sort(key=lambda dof: domain1.dof_coordinates[dof][1])
     dofs2.sort(key=lambda dof: domain2.dof_coordinates[dof][1])
     
-    Q = len(dofs1)
-    assert len(dofs2) == Q
-    L1 = hpc.Matrix(Q, A1.shape[1])
-    L2 = hpc.Matrix(Q, A2.shape[1])
+    C1 = hpc.Matrix(A1.shape[0], A2.shape[1])
+    C2 = hpc.Matrix(A2.shape[0], A1.shape[1])
     
-    for i, (dof1, dof2) in enumerate(zip(dofs1, dofs2)):
-        L1[i, dof1] = 1
-        L2[i, dof2] = -1
+    method = 'coupled Neuman/Dirichlet'
+    if method == 'decoupled Neuman/Dirichlet':
+        for dof1, dof2 in zip(dofs1, dofs2):
+            neighbours1, coeffs_diffx1 = hpc.eval_phi(domain1, dof1)[0::2]
+            neighbours2 = domain2.dof_neighbours[dof2]
+            
+            x1, y1 = domain1.dof_coordinates[dof1]
+            x2, y2 = domain2.dof_coordinates[dof2]
+            
+            assert x1 == x2 and y1 == y2
+            
+            A1[dof1,dof1] = 0
+            for i, nb in enumerate(neighbours1):
+                A1[dof1,nb] = coeffs_diffx1[i]
+                b1[dof1] = k*cosh(k*(y1+h))*cos(k*x1)
+            
+            for i, nb in enumerate(neighbours2):
+                A2[dof2,nb] = 0
+            
+            A2[dof2,dof2] = 1
+            b2[dof2] = cosh(k*(y2+h))*sin(k*x2)
+        
+    elif method  == 'coupled Neuman/Dirichlet':
+        for dof1, dof2 in zip(dofs1, dofs2):
+            neighbours1, coeffs_diffx1 = hpc.eval_phi(domain1, dof1)[0::2]
+            neighbours2, coeffs_diffx2 = hpc.eval_phi(domain2, dof2)[0::2]
+            
+            A1[dof1,dof1] = 0
+            b1[dof1] = 0
+            for i, nb in enumerate(neighbours1):
+                A1[dof1,nb] = coeffs_diffx1[i]
+            
+            
+            A2[dof2,dof2] = 1
+            b2[dof2] = 0
+            for i, nb in enumerate(neighbours2):
+                C1[dof1,nb] = -coeffs_diffx2[i]
+                A2[dof2,nb] = 0
+            
+            C2[dof2,dof1] = -1
     
-    A1 = A1.csr_matrix
-    A2 = A2.csr_matrix
-    L1 = L1.csr_matrix
-    L2 = L2.csr_matrix
-    AA = scipy.sparse.bmat([[A1,   None, L1.T],
-                            [None,   A2, L2.T],
-                            [L1,     L2, None]], 'csc')
-    bb = numpy.zeros(len(b1) + len(b2) + Q, float)
+    A1 = A1.csc_matrix
+    A2 = A2.csc_matrix
+    C1 = C1.csc_matrix
+    C2 = C2.csc_matrix
+    AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csc')
+    bb = numpy.zeros(len(b1) + len(b2), float)
     bb[:len(b1)] = b1
-    bb[len(b1):-Q] = b2
+    bb[len(b1):] = b2
     
     if len(bb) < 20:
         print 'Block system matrix'
@@ -58,36 +91,39 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
             for v in row:
                 print '%6.2g' % v,
             print
+    print 'AA matrix info: shape %r cond %8.2g' % (AA.shape, numpy.linalg.cond(AA.todense()))
     
     # Solve global system
     with hpc.Timer('Solve'):
         try:
             lu = scipy.sparse.linalg.splu(AA)
-            q = lu.solve(bb)
+            phi_all = lu.solve(bb)
         except Exception as e:
             print 'ERROR:'
             print e
             print 'The global system matrix cannot be inverted!'
             exit()
-    phi1 = q[:len(b1)]
-    phi2 = q[len(b1):-Q]
+    phi1 = phi_all[:len(b1)]
+    phi2 = phi_all[len(b1):]
     
     # Analytical solution
-    for domain, phi in zip((domain1, domain2), (phi1, phi2)):
-        phi_a = numpy.zeros_like(phi)
-        for dof, coord in enumerate(domain.dof_coordinates):
+    for domain_i, phi_i in zip((domain1, domain2), (phi1, phi2)):
+        phi_a = numpy.zeros_like(phi_i)
+        for dof, coord in enumerate(domain_i.dof_coordinates):
             x, y = coord
             phi_a[dof] = cosh(k*(y+h))*sin(k*x)
     
         # Print the error
-        print 'Error: %15.8e' % numpy.linalg.norm(phi - phi_a)
+        print 'Error: %15.8e' % numpy.linalg.norm(phi_i - phi_a)
     
     if show_plot:
         from matplotlib import pyplot
         pyplot.spy(AA.todense())
-        for domain, phi in zip((domain1, domain2), (phi1, phi2)):
-            hpc.plot(domain)
-            hpc.plot(domain, phi)
+        domain = add_domains(domain1, domain2)
+        hpc.plot(domain)
+        pyplot.axvline(L, c='k', ls=':')
+        hpc.plot(domain, phi_all)
+        pyplot.axvline(L, c='k', ls=':')
         pyplot.show()
 
 
@@ -128,7 +164,34 @@ def assemble_side_hpc(domain, L, k, h):
         for i, c in enumerate(domain.dof_coordinates):
             print '%3d - %8.2g %8.2g' % (i, c[0], c[1])
     
-    return A, b 
+    return A, b
+
+
+def add_domains(domain1, domain2):
+    N1, N2 = len(domain1.dof_coordinates), len(domain2.dof_coordinates)
+    
+    domain = hpc.HPCDomain()
+    domain.geometric_dimension = 2
+    
+    for arr_name in ('dof_coordinates', 'dof_type', 'dof_neighbours'):
+        a1 = getattr(domain1, arr_name)
+        a2 = getattr(domain2, arr_name)
+        shape = list(a1.shape)
+        shape[0] += N2
+        a = numpy.zeros(shape, a1.dtype)
+        a[:N1] = a1
+        a[N1:] = a2
+        setattr(domain, arr_name, a)
+    
+    domain.dof_neighbours[N1:] += N1
+    
+    domain.triangles = [t for t in domain1.triangles]
+    for d0, d1, d2 in domain2.triangles:
+        domain.triangles.append((d0 + N1, d1 + N1, d2 + N1))
+    
+    return domain
+    
+    
 
 
 if __name__ == '__main__':
