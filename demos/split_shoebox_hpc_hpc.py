@@ -1,8 +1,8 @@
 # encoding: utf8
 from __future__ import division
-from math import cosh, sinh, sin, cos, pi
+from math import cosh, sinh, sin, cos
 import numpy
-import scipy.sparse, scipy.sparse.linalg
+import scipy.sparse.linalg
 import hpc
 
 
@@ -16,7 +16,7 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
     # Assemble global systems
     A1, b1 = assemble_side_hpc(domain1, L, k, h)
     A2, b2 = assemble_side_hpc(domain2, L, k, h)
-
+    
     # Find coupled dofs
     dofs1 = []
     for dof, coord in enumerate(domain1.dof_coordinates): 
