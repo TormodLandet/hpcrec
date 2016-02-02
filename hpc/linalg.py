@@ -39,17 +39,17 @@ def get_linalg_backend_type():
         return 'numpy'
 
 
-def Matrix(N, M):
+def Matrix(N, M, data=None, indices=None, indptr=None):
     """
     Get a matrix of the selected backend type
     """
     backend = get_linalg_backend_type()
     if backend == 'numpy':
-        return NumpyMatrix(N, M)
+        return NumpyMatrix(N, M, data, indices, indptr)
     elif backend == 'scipy':
-        return ScipyMatrix(N, M)
+        return ScipyMatrix(N, M, data, indices, indptr)
     elif backend == 'petsc':
-        return PetscMatrix(N, N)
+        return PetscMatrix(N, N, data, indices, indptr)
 
 
 def Vector(N):
@@ -84,60 +84,62 @@ class GenericMatrix(object):
         pass
 
 
-class GenericVector(object):
-    def __init__(self):
-        raise NotImplementedError('You cannot instantiate a GenericVector')
-    
-    def finalize(self):
-        pass
-
-
 class ScipyMatrix(GenericMatrix):
-    def __init__(self, N, M):
+    def __init__(self, N, M, data=None, indices=None, indptr=None):
         """
-        A sparse matrix (uses LIL for construction and CSR for calculations)
+        A scipy.sparse CSR matrix
         """
-        from scipy.sparse import lil_matrix
+        from scipy.sparse import csr_matrix
         self.shape = (N, M)
-        self._lil = lil_matrix(self.shape)
-        self._csr = self._csc = None
+        
+        if data is not None:
+            self._csr = csr_matrix((data, indices, indptr), self.shape)
+        else:
+            self._csr = csr_matrix(self.shape)
     
     def array(self):
-        return self._lil.toarray()
+        return self._csr.toarray()
     
     @property
     def csr_matrix(self):
-        if self._csr is None:
-            self._csr = self._lil.tocsr()
         return self._csr
     
     @property
     def csc_matrix(self):
-        if self._csc is None:
-            self._csc = self._lil.tocsc()
-        return self._csc
+        return self._csr.tocsc()
     
     def __setitem__(self, key, value):
         """
         Set an item (with global dof indexes)
         """
         i, j = key
-        self._lil[i,j] = value
-        
-        # Invalidate cached matrices
-        self._csr = self._csc = None
+        self._csr[i,j] = value
     
     def __repr__(self, *args, **kwargs):
         return '<ScipyMatrix %d by %d>' % self.shape
 
 
 class PetscMatrix(GenericMatrix):
-    def __init__(self, N, M):
+    def __init__(self, N, M, data=None, indices=None, indptr=None, nnz=9):
         """
         A sparse matrix using the PETSc library through petsc4py
+        
+        Can be initialised through CSR data, indices and indptr
+        (see documentation of scipy.sparse.csr_matrix)
         """
         self.shape = (N, M)
-        self._mat = PETSc.Mat().createAIJ([N, M], nnz=9)
+        
+        if data is not None:
+            self._mat = PETSc.Mat().createAIJ(size=self.shape,
+                                              csr=(indptr, indices, data))    
+        else:
+            self._mat = PETSc.Mat().createAIJ([N, M], nnz=nnz)
+    
+    @classmethod
+    def from_csr(cls, data, indices, indptr, shape):
+        N, M = shape
+        
+        return mat
     
     def array(self):
         return self._mat.getValues(range(self.shape[0]), range(self.shape[1]))
@@ -158,12 +160,17 @@ class PetscMatrix(GenericMatrix):
 
 
 class NumpyMatrix(GenericMatrix):
-    def __init__(self, N, M):
+    def __init__(self, N, M, data=None, indices=None, indptr=None):
         """
         A dense matrix, fast construction and fast enough calculation for small problems
         """
         self.shape = (N, M)
         self._data = numpy.zeros(self.shape, dtype=float)
+        
+        if data is not None:
+            for irow in range(N):
+                for j in range(indptr[irow], indptr[irow+1]):
+                    self._data[irow, indices[j]] = data[j]
     
     def array(self):
         return self._data
@@ -177,6 +184,14 @@ class NumpyMatrix(GenericMatrix):
     
     def __repr__(self, *args, **kwargs):
         return '<NumpyMatrix %d by %d>' % self.shape
+
+
+class GenericVector(object):
+    def __init__(self):
+        raise NotImplementedError('You cannot instantiate a GenericVector')
+    
+    def finalize(self):
+        pass
 
 
 class NumpyVector(numpy.ndarray, GenericVector):
