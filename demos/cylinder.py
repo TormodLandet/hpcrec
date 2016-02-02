@@ -47,9 +47,10 @@ import scipy.sparse.linalg
 class Input(object):
     l1 = 2    # Length before NS domain starts
     l2 = 4    # Length of NS domain
-    h1 = 2    # Height of pot domain
+    h1 = 1    # Height of pot domain
     h2 = 1    # Height of NS domain 
     d = 0.3   # Cylinder diameter
+    N = 10
     layout = 'I'
     
     U0 = 1    # Speed at inlet
@@ -72,6 +73,7 @@ def main(inp):
     while t <= inp.tmax + 1e-6:
         t += inp.dt
         it += 1
+        print 'Timestep %8.4f' % t
         
         # Assemble the two system matrices
         A1, b1 = ns_domain.assemble_csr()
@@ -83,18 +85,18 @@ def main(inp):
             
         # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
         for ns_dof, _, _ in ns_u_map:
-            ns_domain.apply_dirichet(A1, ns_dof)
+            ns_domain.apply_dirichlet(A1, ns_dof)
         
         # Apply Dirichlet boundary conditions to the potential flow block matrix
         # and update the right hand side vector with the non-linear term from the 
         # previous time step (see the off_diagonal_blocks() function).
         for pf_dof, _, _ in pf_p_map:
-            pf_domain.apply_dirichet(A2, pf_dof)
+            pf_domain.apply_dirichlet(A2, pf_dof)
             vel = pf_domain.explicit_velocity_at_dof(pf_dof)
             b2[pf_dof] = (vel[0]**2 + vel[1]**2)/2
         
         # Assemble the block matrix
-        AA = scipy.sparse.bmat([[A1, C1], [C2, A2]])
+        AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
         N1, N2 = len(b1), len(b2)
         bb = numpy.zeros(N1 + N2, float)
         bb[:N1] = b1
@@ -124,6 +126,7 @@ def get_domain_coupling(ns_domain, pf_domain):
         # Find the gradients in the potential flow domain to use as the 
         # Dirichlet boundary condition in the N-S domain
         ns_p_dof_coords = []
+        pf_Ndl = len(pf_dof_coords)
         for ns_dof, ns_coord, ns_dir in ns_dof_coords:
             # Collect and skip pressure dofs
             if ns_dir == -1:
@@ -131,7 +134,6 @@ def get_domain_coupling(ns_domain, pf_domain):
                 continue
             
             # Linear search of for matching potential flow
-            pf_Ndl = len(pf_dof_coords)
             for i in range(pf_Ndl):
                 pf_dof0, pf_coord0 = pf_dof_coords[i]
                 pf_dof1, pf_coord1 = pf_dof_coords[i+1]
@@ -139,14 +141,12 @@ def get_domain_coupling(ns_domain, pf_domain):
                 # Search until we find a match on the potential flow side 
                 match_x = pf_coord0[0] <= ns_coord[0] <= pf_coord1[0]
                 match_y = pf_coord0[1] <= ns_coord[1] <= pf_coord1[1]  
-                if not (match_x and match_y):
-                    continue
-                
-                # Get the weights 
-                dofs, weights = pf_domain.get_neumann_weights(ns_dir, ns_coord,
-                                                              pf_dof0, pf_dof1,
-                                                              pf_coord0, pf_coord1)
-                ns_u_map.append((ns_dof, dofs, weights))
+                if match_x and match_y:
+                    # Get the weights 
+                    dofs, weights = pf_domain.get_neumann_weights(ns_dir, ns_coord,
+                                                                  pf_dof0, pf_dof1)
+                    ns_u_map.append((ns_dof, dofs, weights))
+                    break
         
         # Find the pressure dofs in the N-S domain to use in the Dirichlet boundary
         # conditions for the potential in the potential flow domain
@@ -160,14 +160,11 @@ def get_domain_coupling(ns_domain, pf_domain):
                 # Search until we find a match on the potential flow side 
                 match_x = ns_coord0[0] <= pf_coord[0] <= ns_coord1[0]
                 match_y = ns_coord0[1] <= pf_coord[1] <= ns_coord1[1]  
-                if not (match_x and match_y):
-                    continue
-                
-                # Get the weights
-                dofs, weights = ns_domain.get_pressure_weights(pf_coord,
-                                                               ns_dof0, ns_dof1,
-                                                               ns_coord0, ns_coord1)
-                ns_u_map.append((pf_dof, dofs, weights))
+                if match_x and match_y:
+                    # Get the weights
+                    dofs, weights = ns_domain.get_pressure_weights(pf_coord, ns_dof0, ns_dof1)
+                    pf_p_map.append((pf_dof, dofs, weights))
+                    break
     
     return ns_u_map, pf_p_map
 
@@ -185,14 +182,14 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
     C2 contains the N-S pressure to be used as Dirichlet BC for
     the potential (through the Bernoulli equation). 
     """
-    C1 = scipy.sparse.lil_matrix(A1.shape[0], A2.shape[1])
-    C2 = scipy.sparse.lil_matrix(A2.shape[0], A1.shape[1])
+    C1 = scipy.sparse.lil_matrix((A1.shape[0], A2.shape[1]))
+    C2 = scipy.sparse.lil_matrix((A2.shape[0], A1.shape[1]))
     
     # Dirichlet boundary conditions for the Navier-Stokes velocity
     for ns_dof, pf_dofs, pf_weights in ns_u_map:
         # u - ∇ϕ = 0
         for d, w in zip(pf_dofs, pf_weights):
-            C1[ns_dof, d] = -w  
+            C1[ns_dof, d] = -w
     
     # Dirichlet boundary conditions for the potential using Bernulli's equation
     #    ∂ϕ/∂t + p/ρ + 1/2(∇ϕ)² + gy = C(t)
@@ -204,3 +201,15 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
             C2[pf_dof, d] = w*dt/rho
     
     return C1.tocsr(), C2.tocsr()
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-N', type=int, default=10,
+                        help='number of elements over the height')
+    args = parser.parse_args()
+    
+    inp = Input()
+    inp.N = args.N
+    main(inp)
