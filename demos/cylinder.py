@@ -58,10 +58,15 @@ class Input(object):
     Re = 100  # Reynolds number (determines the viscosity)
     
     dt = 0.01    # Timestep
-    tmax = 0.12  # Time duration of the simulation
+    tmax = 0.15  # Time duration of the simulation
+    tramp = 0.1
+    
+    def inlet_vel(self, t):
+        fac = min(1, t/self.tramp)
+        return self.U0*fac
 
 
-def main(inp, plot=True):
+def main(inp, plot=True, uncoupled=False):
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
@@ -73,31 +78,49 @@ def main(inp, plot=True):
     t = 0
     it = 0
     dt = inp.dt
-    while t <= inp.tmax + 1e-6:
-        t += inp.dt
+    while t <= inp.tmax + 1e-6 - dt:
+        t += dt
         it += 1
         print 'Timestep %8.4f' % t
         
         # Assemble the two system matrices
-        A1, b1 = ns_domain.assemble_csr()
-        A2, b2 = pf_domain.assemble_csr()
+        A1, b1 = ns_domain.get_system(t)
+        A2, b2 = pf_domain.get_system(t)
         
         if C1 is None:
             # Setup coupling blocks between the two system matrices
             C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, inp.rho)
-            
-        # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
-        for ns_dof, _, _ in ns_u_map:
-            ns_domain.apply_dirichlet(A1, ns_dof)
         
-        # Apply Dirichlet boundary conditions to the potential flow block matrix
-        # and update the right hand side vector with the non-linear term from the 
-        # previous time step (see the off_diagonal_blocks() function).
-        phi_old = pf_domain.phi_old
-        for pf_dof, _, _ in pf_p_map:
-            pf_domain.apply_dirichlet(A2, pf_dof)
-            vel = pf_domain.explicit_velocity_at_dof(pf_dof)
-            b2[pf_dof] = -(vel[0]**2 + vel[1]**2)/2 + phi_old[pf_dof]
+        if uncoupled:
+            # Remove coupling
+            C1 *= 0
+            C2 *= 0
+            
+            # Dirichlet conditions on the velocity
+            for ns_dof, _, _ in ns_u_map:
+                apply_dirichlet(A1, ns_dof)
+                vel_dir = ns_domain.vel_dir[ns_dof] 
+                b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
+            
+            # Dirichlet for the potential
+            for pf_dof, _, _ in pf_p_map:
+                apply_dirichlet(A2, pf_dof)
+                b2[pf_dof] = 42
+        
+        else:
+            # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
+            for ns_dof, _, _ in ns_u_map:
+                apply_dirichlet(A1, ns_dof)
+                b1[ns_dof] = 0
+            
+            # Apply Dirichlet boundary conditions to the potential flow block matrix
+            # and update the right hand side vector with the non-linear term from the 
+            # previous time step (see the off_diagonal_blocks() function).
+            phi_old = pf_domain.phi_old
+            for pf_dof, _, _ in pf_p_map:
+                apply_dirichlet(A2, pf_dof)
+                vel = pf_domain.explicit_velocity_at_dof(pf_dof)            
+                b2[pf_dof] = -(vel[0]**2 + vel[1]**2)/2*dt + phi_old[pf_dof]
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -107,6 +130,8 @@ def main(inp, plot=True):
         bb[N1:] = b2
         
         # Solve the block matrix system 
+        if inp.N1 < 7:
+            print 'Cond: %8.2e' % numpy.linalg.cond(AA.todense())
         uu = scipy.sparse.linalg.spsolve(AA, bb)
         
         # Update the solutions in the two sub-domains
@@ -115,12 +140,13 @@ def main(inp, plot=True):
         
         if plot:
             fig = plot_domains(inp, ns_domain, pf_domain)
-            
-            from matplotlib import pyplot
-            fig.canvas.draw()
             fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
-            #pyplot.show(block=False)
-            #exit()
+            
+            #from matplotlib import pyplot
+            #pyplot.figure()
+            #pyplot.spy(AA.todense())
+            #pyplot.show()
+        #exit()
 
 
 def get_domain_coupling(ns_domain, pf_domain):
@@ -216,6 +242,23 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
     return C1.tocsr(), C2.tocsr()
 
 
+def apply_dirichlet(A, row):
+    """
+    Set row to be an identity row
+        A[row,:] = 0
+        A[row,row] = 1
+    """
+    j0, j1 = A.indptr[row], A.indptr[row+1]
+    cols = A.indices[j0:j1]
+    for col in cols:
+        A[row,col] = 0
+    A[row,row] = 1
+    
+    # Debug
+    r = A.getrow(row)
+    assert abs(r).sum() == 1 and A[row,row] == 1
+
+
 def plot_domains(inp, ns_domain, pf_domain):
     """
     Plot the combined results in terms of velocity and pressure
@@ -276,7 +319,7 @@ def plot_domains(inp, ns_domain, pf_domain):
     _   = axes[1].tripcolor(mesh, values[1], vmin=-maxabs_u, vmax=maxabs_u, **params)
     Cp  = axes[2].tripcolor(mesh, values[2], vmin=-maxabs_p, vmax=maxabs_p, **params)
     
-    # Plot mesh lightly above
+    # Plot triangulation mesh lightly above the functions
     for ax in axes[:3]:
         ax.triplot(mesh, c='#cccccc', lw=0.2)
     
@@ -297,8 +340,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-N', type=int, default=10,
                         help='number of elements over the height')
+    parser.add_argument('-p', '--plot', action='store_true')
+    parser.add_argument('-u', '--uncoupled', action='store_true')
     args = parser.parse_args()
     
     inp = Input()
-    inp.N = args.N
-    main(inp)
+    inp.N1 = inp.N2 = args.N
+    main(inp, plot=args.plot, uncoupled=args.uncoupled)

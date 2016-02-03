@@ -14,7 +14,6 @@ class PotentialFlowDomain(object):
         Nx = int(round(Ny*self.input.l1/self.input.h1))
         
         self.domain = hpc.rectangle_domain(p0, p1, Nx, Ny)
-        self.bcs = self._get_boundary_conditions()
         self.phi = numpy.zeros(len(self.domain.dof_coordinates), float)
         self.phi_old = numpy.zeros_like(self.phi)
     
@@ -40,7 +39,7 @@ class PotentialFlowDomain(object):
         
         dividing_line = []
         for dof, coord in enumerate(self.domain.dof_coordinates):
-            if coord[0] == 0:
+            if coord[0] > -1e-8:
                 dividing_line.append((dof, coord))
         
         dividing_line.sort(key=lambda item: item[1][0]+item[1][1])
@@ -52,30 +51,33 @@ class PotentialFlowDomain(object):
         coord0 = domain.dof_coordinates[dof0]
         coord1 = domain.dof_coordinates[dof1]
         
-        d0 = (coord0[0] - coord[0])**2 + (coord0[1] - coord[1])**2
-        d1 = (coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2
+        d0 = ((coord0[0] - coord[0])**2 + (coord0[1] - coord[1])**2)**0.5
+        d1 = ((coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2)**0.5
+        fac = d1/(d0+d1)
         
-        dof = dof0 if d0 < d1 else dof1
-        neighbours, _coeffs, coeffs_diffx, coeffs_diffy = hpc.eval_phi(domain, dof)
+        nbs0, _, cx0, cy0 = hpc.eval_phi(domain, dof0)
+        nbs1, _, cx1, cy1 = hpc.eval_phi(domain, dof1)
         
-        if component == 0:
-            return neighbours, coeffs_diffx
-        else:
-            return neighbours, coeffs_diffy
+        dofs = numpy.zeros(16, int)
+        coeffs = numpy.zeros(16, float)
+        cs = (cx0, cx1) if component == 0 else (cy0, cy1)
+        dofs[:8] = nbs0
+        dofs[8:] = nbs1
+        coeffs[:8] = fac*cs[0]
+        coeffs[8:] = (1-fac)*cs[1]
+        
+        #print 'u%d' % component, coord
+        return dofs, coeffs
     
-    def assemble_csr(self):
+    def get_system(self, t):
+        """
+        Return linear system with normal BCs applied (not coupled)
+        Matrix format is SciPy CSR
+        """
         A, b = hpc.assemble(self.domain)
-        hpc.apply_bcs(self.domain, A, b, self.bcs)
+        bcs = self._get_boundary_conditions(t)
+        hpc.apply_bcs(self.domain, A, b, bcs)
         return A.csr_matrix, b.array()
-    
-    def apply_dirichlet(self, A, dof):
-        """
-        Set row indicated by dof to zero except A[dof,dof] which should be 1
-        """
-        assert self.domain.dof_coordinates[dof][0] > -1e-8
-        for nb in self.domain.dof_neighbours[dof]:
-            A[dof,nb] = 0.0
-        A[dof,dof] = 1.0
     
     def explicit_velocity_at_dof(self, dof):
         neighbours, _coeffs, coeffsdx, coeffsdy = hpc.eval_phi(self.domain, dof)
@@ -112,18 +114,19 @@ class PotentialFlowDomain(object):
             values *= rho
         
         return values
-
-    def _get_boundary_conditions(self):
+    
+    def _get_boundary_conditions(self, t):
         inp, domain = self.input, self.domain
+        U = inp.inlet_vel(t)
         
         bcs = []
         for dof, coord in enumerate(domain.dof_coordinates): 
             if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
                 x, y = coord
                 if x > -1e-8:
-                    bcs.append(('D', dof, 0)) # Coupled to N-S
+                    pass # Coupled to N-S
                 elif x < -inp.l1 + 1e-8:
-                    bcs.append(('Nx', dof, inp.U0))
+                    bcs.append(('Nx', dof, U))
                 elif y > inp.h1/2 - 1e-8:
                     bcs.append(('Ny', dof, 0.0))
                 elif y < -inp.h1/2 + 1e-8:

@@ -36,12 +36,14 @@ class NavierStokesDomain(object):
         coords = self.form.dof_coordinates
         W = self.form.funcspace
         
+        self.vel_dir = numpy.zeros(W.dim(), int) - 2
         dividing_line = []
         for ifs, vel_dir in enumerate([0, 1, -1]):
-            dofs_u0 = W.sub(ifs).dofmap().dofs()
-            for dof in dofs_u0:
+            dofs = W.sub(ifs).dofmap().dofs()
+            for dof in dofs:
+                self.vel_dir[dof] = vel_dir
                 coord = coords[dof]
-                if coord[0] == 0:
+                if coord[0] < 1e-8:
                     dividing_line.append((dof, coord, vel_dir))
         
         dividing_line.sort(key=lambda item: item[1][0]+item[1][1])
@@ -53,24 +55,23 @@ class NavierStokesDomain(object):
         
         d0 = ((coord0[0] - coord[0])**2 + (coord0[1] - coord[1])**2)**0.5
         d1 = ((coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2)**0.5
-        
         fac = d1/(d0+d1)
+        
+        #print 'p', coord
         return (dof0, dof1), (fac, 1-fac)
     
-    def assemble_csr(self):
+    def get_system(self, t):
+        """
+        Return linear system with normal BCs applied (not coupled)
+        Matrix format is SciPy CSR
+        """
         a, L = self.form.weak_form
         bcs = self.form.dirichlet_bcs
+        self.form.u_outlet.assign(df.Constant(self.input.inlet_vel(t)))
         A, b = df.assemble_system(a, L, bcs)
         b_np = b.array()
         A_sp = mat_to_csr(A)
         return A_sp, b_np
-    
-    def apply_dirichlet(self, A, dof):
-        """
-        Set row indicated by dof to zero except A[dof,dof] which should be 1
-        """
-        # Assume this was handled by dirichlet BCs when assembling system
-        pass
     
     def update(self, res):
         """
@@ -162,6 +163,8 @@ class NavierStokesWeakForm(object):
         x0, x1 = 0, self.input.l2
         y0, y1 = -self.input.h2/2, self.input.h2/2
         
+        # Create boundary regions
+        
         class Inlet(df.SubDomain):
             def inside(self, x, on_boundary):
                 return on_boundary and df.near(x[0], x0)
@@ -178,18 +181,21 @@ class NavierStokesWeakForm(object):
         self.region_outlet = Outlet()
         self.region_top_bottom = TopAndBottom()
         
+        # Mark the boundary facets
         marker = df.FacetFunction('size_t', self.mesh)
         marker.set_all(0)
         self.region_inlet.mark(marker, 1)
         self.region_outlet.mark(marker, 2)
         self.region_top_bottom.mark(marker, 3)
         
-        # Dirichlet
+        # Dirichlet boundary conditions
         W = self.funcspace
         zero = df.Constant(0)
-        self.dirichlet_bcs = [df.DirichletBC(W.sub(0), zero, marker, 1), # u0 coupled
-                              df.DirichletBC(W.sub(1), zero, marker, 1), # u1 coupled
-                              #df.DirichletBC(W.sub(1), zero, marker, 2), # u1 outlet
+        uout = self.u_outlet = df.Constant(0)
+        self.dirichlet_bcs = [#df.DirichletBC(W.sub(0), zero, marker, 1), # u0 coupled
+                              #df.DirichletBC(W.sub(1), zero, marker, 1), # u1 coupled
+                              #df.DirichletBC(W.sub(0), uout, marker, 2), # u0 outlet
+                              df.DirichletBC(W.sub(1), zero, marker, 2), # u1 outlet
                               df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 wall
         
         self.marker = marker
