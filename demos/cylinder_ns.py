@@ -5,6 +5,7 @@ from dolfin import dx, div, grad, dot
 import scipy.sparse
 import numpy
 
+
 class NavierStokesDomain(object):
     def __init__(self, inp):
         self.input = inp
@@ -50,6 +51,14 @@ class NavierStokesDomain(object):
         return dividing_line
     
     def get_pressure_weights(self, coord, dof0, dof1):
+        """
+        Input: a spatial coordinate coord that points to somewhere in between
+        the locations of pressure dofs dof0 and dof1
+        
+        Output: a list of dofs and a list of weight such that the pressure
+        at the input coordinate can be evaluated from a pressure solution
+        vector
+        """
         coord0 = self.form.dof_coordinates[dof0]
         coord1 = self.form.dof_coordinates[dof1]
         
@@ -199,6 +208,8 @@ class NavierStokesWeakForm(object):
                               df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 wall
         
         self.marker = marker
+        self.ds = df.Measure('ds')(subdomain_data=marker)
+        self.pressure_neumann_boundaries = [1, 2, 3]
     
     def _create_weak_form(self):
         # Trial and test functions
@@ -217,6 +228,8 @@ class NavierStokesWeakForm(object):
         dt = df.Constant(inp.dt)
         mu = df.Constant(inp.d*inp.U0*inp.rho/inp.Re)
         g = df.Constant([0, 0])
+        n = df.FacetNormal(self.mesh)
+        ds = self.ds
         
         # Lagrange multiplier for the pressure
         lm_trial, lm_test = uc[3], vc[3]
@@ -246,6 +259,10 @@ class NavierStokesWeakForm(object):
             # Body force (gravity)
             # ρ g
             eq -= rho*g[d]*v[d]*dx
+        
+        # Pressure boundary integral, from integration by parts
+        for region in self.pressure_neumann_boundaries:
+            eq += p*dot(n, v)*ds(region)
         
         # Store the weak form for assembly
         self.weak_form = df.system(eq)

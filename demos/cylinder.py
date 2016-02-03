@@ -52,6 +52,7 @@ class Input(object):
     d = 0.3   # Cylinder diameter
     N1 = N2 = 10
     layout = 'I'
+    coupled = True
     
     U0 = 0.01    # Speed at inlet
     rho = 1   # Density
@@ -91,23 +92,7 @@ def main(inp, plot=True, uncoupled=False):
             # Setup coupling blocks between the two system matrices
             C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, inp.rho)
         
-        if uncoupled:
-            # Remove coupling
-            C1 *= 0
-            C2 *= 0
-            
-            # Dirichlet conditions on the velocity
-            for ns_dof, _, _ in ns_u_map:
-                apply_dirichlet(A1, ns_dof)
-                vel_dir = ns_domain.vel_dir[ns_dof] 
-                b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
-            
-            # Dirichlet for the potential
-            for pf_dof, _, _ in pf_p_map:
-                apply_dirichlet(A2, pf_dof)
-                b2[pf_dof] = 42
-        
-        else:
+        if inp.coupled:
             # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
             for ns_dof, _, _ in ns_u_map:
                 apply_dirichlet(A1, ns_dof)
@@ -121,6 +106,19 @@ def main(inp, plot=True, uncoupled=False):
                 apply_dirichlet(A2, pf_dof)
                 vel = pf_domain.explicit_velocity_at_dof(pf_dof)            
                 b2[pf_dof] = -(vel[0]**2 + vel[1]**2)/2*dt + phi_old[pf_dof]
+        
+        else:
+            # Remove coupling
+            C1 *= 0; C2 *= 0
+            for ns_dof, _, _ in ns_u_map:
+                # Set coupled velocity to inlet velocity 
+                apply_dirichlet(A1, ns_dof)
+                vel_dir = ns_domain.vel_dir[ns_dof] 
+                b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
+            for pf_dof, _, _ in pf_p_map:
+                # Set coupled potential to a constant
+                apply_dirichlet(A2, pf_dof)
+                b2[pf_dof] = 42
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -346,4 +344,5 @@ if __name__ == '__main__':
     
     inp = Input()
     inp.N1 = inp.N2 = args.N
-    main(inp, plot=args.plot, uncoupled=args.uncoupled)
+    inp.coupled = not args.uncoupled
+    main(inp, plot=args.plot)
