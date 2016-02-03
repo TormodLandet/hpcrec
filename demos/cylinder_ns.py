@@ -73,13 +73,28 @@ class NavierStokesDomain(object):
         pass
     
     def update(self, res):
+        """
+        Update the values of the function after the time step has been solved
+        """
+        # Update the coupled vector
         w = self.form.func
         w.vector().set_local(res)
-        u0, u1, p = self.form.u0, self.form.u1, self.form.p
-        self.form.assigner.assign([u0, u1, p], w)
         
+        # Spread to the component vectors 
+        u0, u1, p, l = self.form.u0, self.form.u1, self.form.p, self.form.l
+        funcs = [u0, u1, p, l]
+        self.form.assigner.assign(funcs, w)
+        for func in funcs:
+            func.vector().apply('insert') # dolfin bug #587
+        
+        # Update convection
+        self.form.u_conv0.assign(u0)
+        self.form.u_conv1.assign(u1)
+    
     def get_triangulation(self):
-        # Build triangulation and get the vertex values of the function
+        """
+        Get the mesh in a format suitable for matplotlib
+        """
         coords = self.form.mesh.coordinates()
         triangles = []
         for cell in df.cells(self.form.mesh):
@@ -88,6 +103,9 @@ class NavierStokesDomain(object):
         return coords, triangles
     
     def get_data(self, func_name):
+        """
+        Get the values at each vertex of the given function
+        """
         func = getattr(self.form, func_name)
         return func.compute_vertex_values()
 
@@ -108,16 +126,19 @@ class NavierStokesWeakForm(object):
         # Create mesh
         p0 = df.Point(x0, y0)
         p1 = df.Point(x1, y1)
-        Nx = Ny = self.input.N
+        Ny = self.input.N2
+        Nx = int(round(Ny*self.input.l2/self.input.h2))
         self.mesh = df.RectangleMesh(p0, p1, Nx, Ny)
     
     def _create_functions(self):
         # Elements and function spaces for the individual components
         cell = self.mesh.ufl_cell()
         e_u = df.FiniteElement('CG', cell, 2)
-        e_p = df.FiniteElement('CG', cell, 2)
+        e_p = df.FiniteElement('CG', cell, 1)
+        e_l = df.FiniteElement('R', cell, 0)
         V = df.FunctionSpace(self.mesh, e_u)
         Q = df.FunctionSpace(self.mesh, e_p)
+        L = df.FunctionSpace(self.mesh, e_l)
         
         # Current time step
         self.u0 = df.Function(V)
@@ -125,14 +146,16 @@ class NavierStokesWeakForm(object):
         # Convective velocity
         self.u_conv0 = df.Function(V)
         self.u_conv1 = df.Function(V)
+        # Pressure and Lagrange multiplier
         self.p = df.Function(Q)
+        self.l = df.Function(L)
         
         # Elements and function spaces for the mixed space 
-        e_mixed = df.MixedElement([e_u, e_u, e_p])
+        e_mixed = df.MixedElement([e_u, e_u, e_p, e_l])
         W = df.FunctionSpace(self.mesh, e_mixed)
         self.funcspace = W
         self.func = df.Function(W)
-        self.assigner = df.FunctionAssigner([V, V, Q], W)
+        self.assigner = df.FunctionAssigner([V, V, Q, L], W)
         self.dof_coordinates = W.tabulate_dof_coordinates().reshape((-1, 2))
     
     def _create_boundary_conditions(self):
@@ -164,11 +187,10 @@ class NavierStokesWeakForm(object):
         # Dirichlet
         W = self.funcspace
         zero = df.Constant(0)
-        self.dirichlet_bcs = [df.DirichletBC(W.sub(0), zero, marker, 1),
-                              df.DirichletBC(W.sub(1), zero, marker, 1),
-                              df.DirichletBC(W.sub(1), zero, marker, 2),
-                              df.DirichletBC(W.sub(1), zero, marker, 3),
-                              df.DirichletBC(W.sub(2), zero, marker, 3)]
+        self.dirichlet_bcs = [df.DirichletBC(W.sub(0), zero, marker, 1), # u0 coupled
+                              df.DirichletBC(W.sub(1), zero, marker, 1), # u1 coupled
+                              #df.DirichletBC(W.sub(1), zero, marker, 2), # u1 outlet
+                              df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 wall
         
         self.marker = marker
     
@@ -190,7 +212,10 @@ class NavierStokesWeakForm(object):
         mu = df.Constant(inp.d*inp.U0*inp.rho/inp.Re)
         g = df.Constant([0, 0])
         
-        eq = 0
+        # Lagrange multiplier for the pressure
+        lm_trial, lm_test = uc[3], vc[3]
+        eq = (p*lm_test + q*lm_trial)*dx
+        
         for d in range(2):
             # Divergence free criterion
             # ∇⋅u = 0

@@ -50,10 +50,10 @@ class Input(object):
     h1 = 1    # Height of pot domain
     h2 = 1    # Height of NS domain 
     d = 0.3   # Cylinder diameter
-    N = 10
+    N1 = N2 = 10
     layout = 'I'
     
-    U0 = 1    # Speed at inlet
+    U0 = 0.01    # Speed at inlet
     rho = 1   # Density
     Re = 100  # Reynolds number (determines the viscosity)
     
@@ -118,7 +118,7 @@ def main(inp, plot=True):
             
             from matplotlib import pyplot
             fig.canvas.draw()
-            fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4))
+            fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
             #pyplot.show(block=False)
             #exit()
 
@@ -245,7 +245,8 @@ def plot_domains(inp, ns_domain, pf_domain):
         values[i,Nv_ns:] = pf_domain.get_data(func_name) 
     
     # Get color bar limits
-    maxabs_u = max(abs(values[0]).max(), abs(values[1]).max())
+    #maxabs_u = max(abs(values[0]).max(), abs(values[1]).max())
+    maxabs_u = abs(inp.U0)*1.5
     maxabs_p = abs(values[2]).max()
     
     # Get figure and axes
@@ -254,23 +255,33 @@ def plot_domains(inp, ns_domain, pf_domain):
         for ax in axes:
             ax.clear()
     else:
-        fig = pyplot.figure()
+        fig = pyplot.figure(figsize=(12, 9))
         axes = [None]*5
-        axes[0] = fig.add_axes([0.00, 0.66, 0.80, 0.33])
-        axes[1] = fig.add_axes([0.00, 0.33, 0.80, 0.33])
-        axes[2] = fig.add_axes([0.00, 0.00, 0.80, 0.33])
+        axes[0] = fig.add_axes([0.02, 0.66, 0.80, 0.33])
+        axes[1] = fig.add_axes([0.02, 0.33, 0.80, 0.33])
+        axes[2] = fig.add_axes([0.02, 0.00, 0.80, 0.33])
         # Colorbar axes
         axes[3] = fig.add_axes([0.85, 0.55, 0.05, 0.35])
         axes[4] = fig.add_axes([0.85, 0.10, 0.05, 0.35])
+        
+    # Setup color map to be blue via white to red with out of range colors cyan and pink
+    cmap = pyplot.cm.get_cmap('RdBu_r')
+    cmap.set_over('#ff7ee6')
+    cmap.set_under('#25f4ff')
+    cmap.set_bad('#acacac')
+    params = dict(shading='gouraud', cmap=cmap)
     
     # Plot functions on triangulation
-    params = dict(shading='gouraud', edgecolors='k')
-    Cu0 = axes[0].tripcolor(mesh, values[0], vmin=-maxabs_u, vmax=maxabs_u, **params)
-    _C  = axes[1].tripcolor(mesh, values[1], vmin=-maxabs_u, vmax=maxabs_u, **params)
+    Cu  = axes[0].tripcolor(mesh, values[0], vmin=-maxabs_u, vmax=maxabs_u, **params)
+    _   = axes[1].tripcolor(mesh, values[1], vmin=-maxabs_u, vmax=maxabs_u, **params)
     Cp  = axes[2].tripcolor(mesh, values[2], vmin=-maxabs_p, vmax=maxabs_p, **params)
     
+    # Plot mesh lightly above
+    for ax in axes[:3]:
+        ax.triplot(mesh, c='#cccccc', lw=0.2)
+    
     # Colorbars
-    fig.colorbar(Cu0, cax=axes[3])
+    fig.colorbar(Cu, cax=axes[3])
     fig.colorbar(Cp, cax=axes[4])
     
     for ax in axes[:3]:

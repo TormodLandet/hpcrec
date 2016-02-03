@@ -4,13 +4,16 @@ import hpc
 
 class PotentialFlowDomain(object):
     def __init__(self, inp):
+        assert inp.layout == 'I'
+        hpc.parameters['linear_algebra_backend'] = 'scipy'
         self.input = inp
         
-        assert inp.layout == 'I'
         p0 = (-inp.l1, -inp.h1/2)
         p1 = (0, inp.h1/2)
-        hpc.parameters['linear_algebra_backend'] = 'scipy'
-        self.domain = hpc.rectangle_domain(p0, p1, inp.N, inp.N)
+        Ny = self.input.N1
+        Nx = int(round(Ny*self.input.l1/self.input.h1))
+        
+        self.domain = hpc.rectangle_domain(p0, p1, Nx, Ny)
         self.bcs = self._get_boundary_conditions()
         self.phi = numpy.zeros(len(self.domain.dof_coordinates), float)
         self.phi_old = numpy.zeros_like(self.phi)
@@ -118,12 +121,14 @@ class PotentialFlowDomain(object):
             if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
                 x, y = coord
                 if x > -1e-8:
-                    bcs.append(('D', dof, 0)) # To be overwritten by 
+                    bcs.append(('D', dof, 0)) # Coupled to N-S
                 elif x < -inp.l1 + 1e-8:
-                    bcs.append(('Nx', dof, inp.U0))    
+                    bcs.append(('Nx', dof, inp.U0))
                 elif y > inp.h1/2 - 1e-8:
                     bcs.append(('Ny', dof, 0.0))
                 elif y < -inp.h1/2 + 1e-8:
                     bcs.append(('Ny', dof, 0.0))
+                else:
+                    raise 'this should not happen!'
         
         return bcs
