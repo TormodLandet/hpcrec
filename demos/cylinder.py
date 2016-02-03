@@ -57,15 +57,18 @@ class Input(object):
     rho = 1   # Density
     Re = 100  # Reynolds number (determines the viscosity)
     
-    dt = 0.01
-    tmax = 1.0
+    dt = 0.01    # Timestep
+    tmax = 0.12  # Time duration of the simulation
 
 
-def main(inp):
+def main(inp, plot=True):
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
     C1, C2  = None, None
+    
+    import warnings
+    warnings.simplefilter('error', scipy.sparse.SparseEfficiencyWarning)
     
     t = 0
     it = 0
@@ -90,10 +93,11 @@ def main(inp):
         # Apply Dirichlet boundary conditions to the potential flow block matrix
         # and update the right hand side vector with the non-linear term from the 
         # previous time step (see the off_diagonal_blocks() function).
+        phi_old = pf_domain.phi_old
         for pf_dof, _, _ in pf_p_map:
             pf_domain.apply_dirichlet(A2, pf_dof)
             vel = pf_domain.explicit_velocity_at_dof(pf_dof)
-            b2[pf_dof] = (vel[0]**2 + vel[1]**2)/2
+            b2[pf_dof] = -(vel[0]**2 + vel[1]**2)/2 + phi_old[pf_dof]
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -108,6 +112,15 @@ def main(inp):
         # Update the solutions in the two sub-domains
         ns_domain.update(uu[:N1])
         pf_domain.update(uu[N1:])
+        
+        if plot:
+            fig = plot_domains(inp, ns_domain, pf_domain)
+            
+            from matplotlib import pyplot
+            fig.canvas.draw()
+            fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4))
+            #pyplot.show(block=False)
+            #exit()
 
 
 def get_domain_coupling(ns_domain, pf_domain):
@@ -194,13 +207,78 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
     # Dirichlet boundary conditions for the potential using Bernulli's equation
     #    ∂ϕ/∂t + p/ρ + 1/2(∇ϕ)² + gy = C(t)
     # which gives, when pulling C(t) into ϕ and disregarding gravity: 
-    #               ϕ^{n+1} + p/ρ Δt = - 1/2(∇ϕ^n)²
+    #               ϕ^{n+1} + p/ρ Δt = - 1/2(∇ϕ^n)² + ϕ^n 
     # where we have used first order backward time differencing.
     for pf_dof, ns_p_dofs, ns_p_weights in pf_p_map:
         for d, w in zip(ns_p_dofs, ns_p_weights):
             C2[pf_dof, d] = w*dt/rho
     
     return C1.tocsr(), C2.tocsr()
+
+
+def plot_domains(inp, ns_domain, pf_domain):
+    """
+    Plot the combined results in terms of velocity and pressure
+    """
+    from matplotlib import pyplot
+    from matplotlib import tri
+    
+    # Get combined triangulation
+    ns_coords, ns_triangles = ns_domain.get_triangulation()
+    pf_coords, pf_triangles = pf_domain.get_triangulation()
+    Nv_ns, Nv_pf = len(ns_coords), len(pf_coords)
+    
+    coords = numpy.zeros((Nv_ns + Nv_pf, 2), float)
+    coords[:Nv_ns] = ns_coords
+    coords[Nv_ns:] = pf_coords
+    
+    triangles = list(ns_triangles)
+    for v0, v1, v2 in pf_triangles:
+        triangles.append((v0+Nv_ns, v1+Nv_ns, v2+Nv_ns))
+    mesh = tri.Triangulation([c[0] for c in coords], [c[1] for c in coords], triangles)
+    
+    # Get combined data
+    func_names = ['u0', 'u1', 'p']
+    values = numpy.zeros((3, len(coords)), float)
+    for i, func_name in enumerate(func_names):
+        values[i,:Nv_ns] = ns_domain.get_data(func_name)
+        values[i,Nv_ns:] = pf_domain.get_data(func_name) 
+    
+    # Get color bar limits
+    maxabs_u = max(abs(values[0]).max(), abs(values[1]).max())
+    maxabs_p = abs(values[2]).max()
+    
+    # Get figure and axes
+    if hasattr(inp, '_plot_domains_save'):
+        fig, axes = inp._plot_domains_save
+        for ax in axes:
+            ax.clear()
+    else:
+        fig = pyplot.figure()
+        axes = [None]*5
+        axes[0] = fig.add_axes([0.00, 0.66, 0.80, 0.33])
+        axes[1] = fig.add_axes([0.00, 0.33, 0.80, 0.33])
+        axes[2] = fig.add_axes([0.00, 0.00, 0.80, 0.33])
+        # Colorbar axes
+        axes[3] = fig.add_axes([0.85, 0.55, 0.05, 0.35])
+        axes[4] = fig.add_axes([0.85, 0.10, 0.05, 0.35])
+    
+    # Plot functions on triangulation
+    params = dict(shading='gouraud', edgecolors='k')
+    Cu0 = axes[0].tripcolor(mesh, values[0], vmin=-maxabs_u, vmax=maxabs_u, **params)
+    _C  = axes[1].tripcolor(mesh, values[1], vmin=-maxabs_u, vmax=maxabs_u, **params)
+    Cp  = axes[2].tripcolor(mesh, values[2], vmin=-maxabs_p, vmax=maxabs_p, **params)
+    
+    # Colorbars
+    fig.colorbar(Cu0, cax=axes[3])
+    fig.colorbar(Cp, cax=axes[4])
+    
+    for ax in axes[:3]:
+        ax.axis('off')
+        ax.plot([0, 0], [-inp.h2/2, inp.h2/2], ':k')
+    
+    inp._plot_domains_save = fig, axes
+    return fig
 
 
 if __name__ == '__main__':

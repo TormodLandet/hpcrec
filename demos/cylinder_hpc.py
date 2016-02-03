@@ -13,6 +13,7 @@ class PotentialFlowDomain(object):
         self.domain = hpc.rectangle_domain(p0, p1, inp.N, inp.N)
         self.bcs = self._get_boundary_conditions()
         self.phi = numpy.zeros(len(self.domain.dof_coordinates), float)
+        self.phi_old = numpy.zeros_like(self.phi)
     
     def get_dividing_line(self, line_number):
         """
@@ -68,6 +69,7 @@ class PotentialFlowDomain(object):
         """
         Set row indicated by dof to zero except A[dof,dof] which should be 1
         """
+        assert self.domain.dof_coordinates[dof][0] > -1e-8
         for nb in self.domain.dof_neighbours[dof]:
             A[dof,nb] = 0.0
         A[dof,dof] = 1.0
@@ -81,8 +83,47 @@ class PotentialFlowDomain(object):
         return u, v
     
     def update(self, phi):
+        self.phi_old[:] = self.phi
         self.phi[:] = phi
     
+    def get_triangulation(self):
+        coords = self.domain.dof_coordinates
+        triangles = self.domain.triangles
+        return coords, triangles
+    
+    def get_data(self, func_name):
+        N = len(self.domain.dof_coordinates)
+        values = numpy.zeros(N, float)
+        rho = self.input.rho
+        dt = self.input.dt
+        for dof in range(N):
+            vel = self.explicit_velocity_at_dof(dof)
+            if func_name == 'u0':
+                values[dof] = vel[0]
+            elif func_name == 'u1':
+                values[dof] = vel[1]
+            elif func_name == 'p':
+                values[dof] = -(vel[0]**2 + vel[1]**2)/2 - (self.phi[dof] - self.phi_old[dof])/dt
+        
+        if func_name == 'p':
+            values *= rho
+        
+        return values
+
     def _get_boundary_conditions(self):
+        inp, domain = self.input, self.domain
+        
         bcs = []
+        for dof, coord in enumerate(domain.dof_coordinates): 
+            if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
+                x, y = coord
+                if x > -1e-8:
+                    bcs.append(('D', dof, 0)) # To be overwritten by 
+                elif x < -inp.l1 + 1e-8:
+                    bcs.append(('Nx', dof, inp.U0))    
+                elif y > inp.h1/2 - 1e-8:
+                    bcs.append(('Ny', dof, 0.0))
+                elif y < -inp.h1/2 + 1e-8:
+                    bcs.append(('Ny', dof, 0.0))
+        
         return bcs

@@ -77,6 +77,19 @@ class NavierStokesDomain(object):
         w.vector().set_local(res)
         u0, u1, p = self.form.u0, self.form.u1, self.form.p
         self.form.assigner.assign([u0, u1, p], w)
+        
+    def get_triangulation(self):
+        # Build triangulation and get the vertex values of the function
+        coords = self.form.mesh.coordinates()
+        triangles = []
+        for cell in df.cells(self.form.mesh):
+            cell_vertices = cell.entities(0)
+            triangles.append(cell_vertices)
+        return coords, triangles
+    
+    def get_data(self, func_name):
+        func = getattr(self.form, func_name)
+        return func.compute_vertex_values()
 
 
 class NavierStokesWeakForm(object):
