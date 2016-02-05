@@ -53,3 +53,7 @@ Physical Line(2) = {2};
 Physical Line(3) = {3};
 Physical Line(4) = {4};
 Physical Line(5) = {5,6,7,8};
+
+// Physical Surface - dolfin convert requires this for some reason
+
+Physical Surface(0) = {1};
