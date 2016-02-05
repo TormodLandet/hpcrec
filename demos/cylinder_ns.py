@@ -1,5 +1,6 @@
 # encoding: utf8
 from __future__ import division
+import subprocess
 import dolfin as df
 from dolfin import dx, div, grad, dot
 import scipy.sparse
@@ -128,17 +129,40 @@ class NavierStokesWeakForm(object):
         self._create_boundary_conditions()
         self._create_weak_form()
     
-    def _create_mesh(self):
+    def _create_mesh(self, skip_cylinder=False):
         # Geometry
         x0, x1 = 0, self.input.l2
         y0, y1 = -self.input.h2/2, self.input.h2/2
         
-        # Create mesh
-        p0 = df.Point(x0, y0)
-        p1 = df.Point(x1, y1)
-        Ny = self.input.N2
-        Nx = int(round(Ny*self.input.l2/self.input.h2))
-        self.mesh = df.RectangleMesh(p0, p1, Nx, Ny)
+        if skip_cylinder:
+            # Create mesh
+            p0 = df.Point(x0, y0)
+            p1 = df.Point(x1, y1)
+            Ny = self.input.N2
+            Nx = int(round(Ny*self.input.l2/self.input.h2))
+            
+            self.mesh = df.RectangleMesh(p0, p1, Nx, Ny)
+            self.regions = None
+            return
+        
+        # Create unstructured mesh with gmsh
+        assert df.MPI.size(df.mpi_comm_world()) == 1
+        cmd1 = ['gmsh',
+                '-setnumber', 'l2', repr(self.input.l2),
+                '-setnumber', 'h2', repr(self.input.h2),
+                '-setnumber',  'f', repr(self.input.f),
+                '-setnumber',  'd', repr(self.input.d),
+                '-setnumber',  'h', repr(self.input.h2/self.input.N2),
+                '-2', 'cylinder_gmsh.geo', '-o', 'cylinder_gmsh.msh']
+        cmd2 = ['dolfin-convert', 'cylinder_gmsh.msh', 'cylinder_gmsh.xml']
+        with open('/dev/null', 'w') as devnull:
+            for cmd in (cmd1, cmd2):
+                print cmd
+                subprocess.call(cmd, stdout=devnull, stderr=devnull)
+                
+        self.mesh = df.Mesh('cylinder_gmsh.xml')
+        self.regions = df.MeshFunction('size_t', self.mesh, 'cylinder_gmsh_physical_region.xml')
+        assert self.mesh.topology().dim() == 2
     
     def _create_functions(self):
         # Elements and function spaces for the individual components
@@ -169,43 +193,45 @@ class NavierStokesWeakForm(object):
         self.dof_coordinates = W.tabulate_dof_coordinates().reshape((-1, 2))
     
     def _create_boundary_conditions(self):
-        x0, x1 = 0, self.input.l2
-        y0, y1 = -self.input.h2/2, self.input.h2/2
+        has_cylinder = self.regions is not None
         
-        # Create boundary regions
+        if has_cylinder:
+            marker = self.regions
         
-        class Inlet(df.SubDomain):
-            def inside(self, x, on_boundary):
-                return on_boundary and df.near(x[0], x0)
-        
-        class Outlet(df.SubDomain):
-            def inside(self, x, on_boundary):
-                return on_boundary and df.near(x[0], x1)
-        
-        class TopAndBottom(df.SubDomain):
-            def inside(self, x, on_boundary):
-                return on_boundary and (df.near(x[1], y0) or df.near(x[1], y1))
-        
-        self.region_inlet = Inlet()
-        self.region_outlet = Outlet()
-        self.region_top_bottom = TopAndBottom()
-        
-        # Mark the boundary facets
-        marker = df.FacetFunction('size_t', self.mesh)
-        marker.set_all(0)
-        self.region_inlet.mark(marker, 1)
-        self.region_outlet.mark(marker, 2)
-        self.region_top_bottom.mark(marker, 3)
+        else:
+            x0, x1 = 0, self.input.l2
+            y0, y1 = -self.input.h2/2, self.input.h2/2
+            
+            # Helper to mark regions of the mesh
+            def mark(marker, number, selector):
+                class Region(df.SubDomain):
+                    def inside(self, x, on_boundary):
+                        return selector(x, on_boundary)
+                region = Region()
+                region.mark(marker, number) 
+            
+            # Mark the boundary facets
+            marker = df.FacetFunction('size_t', self.mesh)
+            marker.set_all(0)
+            mark(marker, 4, lambda x, on_boundary: on_boundary and df.near(x[0], x0)) # inlet
+            mark(marker, 2, lambda x, on_boundary: on_boundary and df.near(x[0], x1)) # outlet
+            mark(marker, 1, lambda x, on_boundary: on_boundary and df.near(x[1], y0)) # bottom
+            mark(marker, 3, lambda x, on_boundary: on_boundary and df.near(x[1], y1)) # top
         
         # Dirichlet boundary conditions
         W = self.funcspace
         zero = df.Constant(0)
         uout = self.u_outlet = df.Constant(0)
-        self.dirichlet_bcs = [#df.DirichletBC(W.sub(0), zero, marker, 1), # u0 coupled
-                              #df.DirichletBC(W.sub(1), zero, marker, 1), # u1 coupled
+        self.dirichlet_bcs = [#df.DirichletBC(W.sub(0), zero, marker, 4), # u0 coupled
+                              #df.DirichletBC(W.sub(1), zero, marker, 4), # u1 coupled
                               #df.DirichletBC(W.sub(0), uout, marker, 2), # u0 outlet
                               df.DirichletBC(W.sub(1), zero, marker, 2), # u1 outlet
-                              df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 wall
+                              df.DirichletBC(W.sub(1), zero, marker, 1), # u1 bottom
+                              df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 top
+        
+        if has_cylinder:
+            self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), zero, marker, 5)) # u0 cylinder
+            self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 5)) # u1 cylinder
         
         self.marker = marker
         self.ds = df.Measure('ds')(subdomain_data=marker)

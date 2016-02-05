@@ -4,6 +4,6 @@
 .settings
 README.html
 *.msh
-*.geo
+*.xml
 *.out
 *.png
