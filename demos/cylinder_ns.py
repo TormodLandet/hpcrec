@@ -123,7 +123,7 @@ class NavierStokesDomain(object):
 class NavierStokesWeakForm(object):
     def __init__(self, inp):
         self.input = inp
-        self.use_lagrange_multiplicator = True#not inp.coupled
+        self.use_lagrange_multiplicator = True#not inp.coupled_domains
         self._create_mesh()
         self._create_functions()
         self._create_boundary_conditions()
@@ -248,7 +248,7 @@ class NavierStokesWeakForm(object):
         
         self.marker = marker
         self.ds = df.Measure('ds')(subdomain_data=marker)
-        self.pressure_neumann_boundaries = [1, 2, 3]
+        self.pressure_neumann_boundaries = [1, 2, 3, 4, 5]
     
     def _create_weak_form(self):
         # Trial and test functions

@@ -54,7 +54,8 @@ class Input(object):
     f = 2/0.3 # Diameters between cylinder center and inlet
     N1 = N2 = 10
     layout = 'I'
-    coupled = False
+    coupled_domains = False
+    
     
     U0 = 0.1  # Speed at inlet
     rho = 1   # Density
@@ -72,7 +73,7 @@ class Input(object):
         return self.U0*fac
 
 
-def main(inp, uncoupled=False):
+def main(inp):
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
@@ -99,7 +100,7 @@ def main(inp, uncoupled=False):
             C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
         
         phi_prev = pf_domain.phi
-        if inp.coupled:
+        if inp.coupled_domains:
             # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
             for ns_dof, _, _ in ns_u_map:
                 apply_dirichlet(A1, ns_dof)
@@ -268,7 +269,7 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map):
     for ns_dof, pf_dofs, pf_weights in ns_u_map:
         # u - ∇ϕ = 0
         for d, w in zip(pf_dofs, pf_weights):
-            C1[ns_dof, d] = -w
+            C1[ns_dof, d] += -w
     
     # Dirichlet boundary conditions for the potential using Bernulli's equation
     #    ∂ϕ/∂t + p/ρ + 1/2(∇ϕ)² + gy = C(t)
@@ -385,7 +386,7 @@ if __name__ == '__main__':
     
     inp = Input()
     inp.N1 = inp.N2 = args.N
-    inp.coupled = not args.uncoupled
+    inp.coupled_domains = not args.uncoupled
     if not args.plot:
         inp.output_step = 1e100 
     main(inp)

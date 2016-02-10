@@ -54,7 +54,6 @@ class PotentialFlowDomain(object):
         d0 = ((coord0[0] - coord[0])**2 + (coord0[1] - coord[1])**2)**0.5
         d1 = ((coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2)**0.5
         fac = d1/(d0 + d1)
-        fac = 0
         
         nbs0, _, cx0, cy0 = hpc.eval_phi(domain, dof0)
         nbs1, _, cx1, cy1 = hpc.eval_phi(domain, dof1)
