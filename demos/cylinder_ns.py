@@ -92,10 +92,9 @@ class NavierStokesDomain(object):
         w.vector().set_local(res)
         
         # Spread to the component vectors 
-        u0, u1, p, l = self.form.u0, self.form.u1, self.form.p, self.form.l
-        funcs = [u0, u1, p, l]
-        self.form.assigner.assign(funcs, w)
-        for func in funcs:
+        u0, u1 = self.form.u0, self.form.u1
+        self.form.assigner.assign(self.form.functions, w)
+        for func in self.form.functions:
             func.vector().apply('insert') # dolfin bug #587
         
         # Update convection
@@ -124,10 +123,15 @@ class NavierStokesDomain(object):
 class NavierStokesWeakForm(object):
     def __init__(self, inp):
         self.input = inp
+        self.use_lagrange_multiplicator = True#not inp.coupled
         self._create_mesh()
         self._create_functions()
         self._create_boundary_conditions()
         self._create_weak_form()
+        
+        # Show mesh
+        #df.plot(self.marker)
+        #df.interactive()
     
     def _create_mesh(self, skip_cylinder=False):
         # Geometry
@@ -157,11 +161,11 @@ class NavierStokesWeakForm(object):
         cmd2 = ['dolfin-convert', 'cylinder_gmsh.msh', 'cylinder_gmsh.xml']
         with open('/dev/null', 'w') as devnull:
             for cmd in (cmd1, cmd2):
-                print cmd
+                print 'Meshgen: ', ' '.join(cmd)
                 subprocess.call(cmd, stdout=devnull, stderr=devnull)
                 
         self.mesh = df.Mesh('cylinder_gmsh.xml')
-        self.regions = df.MeshFunction('size_t', self.mesh, 'cylinder_gmsh_physical_region.xml')
+        self.regions = df.MeshFunction('size_t', self.mesh, 'cylinder_gmsh_facet_region.xml')
         assert self.mesh.topology().dim() == 2
     
     def _create_functions(self):
@@ -184,12 +188,21 @@ class NavierStokesWeakForm(object):
         self.p = df.Function(Q)
         self.l = df.Function(L)
         
+        if self.use_lagrange_multiplicator:
+            elements = [e_u, e_u, e_p, e_l]
+            func_spaces = [V, V, Q, L]
+            self.functions = [self.u0, self.u1, self.p, self.l]
+        else:
+            elements = [e_u, e_u, e_p]
+            func_spaces = [V, V, Q]
+            self.functions = [self.u0, self.u1, self.p]
+        
         # Elements and function spaces for the mixed space 
-        e_mixed = df.MixedElement([e_u, e_u, e_p, e_l])
+        e_mixed = df.MixedElement(elements)
         W = df.FunctionSpace(self.mesh, e_mixed)
         self.funcspace = W
         self.func = df.Function(W)
-        self.assigner = df.FunctionAssigner([V, V, Q, L], W)
+        self.assigner = df.FunctionAssigner(func_spaces, W)
         self.dof_coordinates = W.tabulate_dof_coordinates().reshape((-1, 2))
     
     def _create_boundary_conditions(self):
@@ -258,8 +271,11 @@ class NavierStokesWeakForm(object):
         ds = self.ds
         
         # Lagrange multiplier for the pressure
-        lm_trial, lm_test = uc[3], vc[3]
-        eq = (p*lm_test + q*lm_trial)*dx
+        if self.use_lagrange_multiplicator:
+            lm_trial, lm_test = uc[3], vc[3]
+            eq = (p*lm_test + q*lm_trial)*dx
+        else:
+            eq = 0
         
         for d in range(2):
             # Divergence free criterion

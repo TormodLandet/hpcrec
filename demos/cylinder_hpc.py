@@ -53,7 +53,8 @@ class PotentialFlowDomain(object):
         
         d0 = ((coord0[0] - coord[0])**2 + (coord0[1] - coord[1])**2)**0.5
         d1 = ((coord1[0] - coord[0])**2 + (coord1[1] - coord[1])**2)**0.5
-        fac = d1/(d0+d1)
+        fac = d1/(d0 + d1)
+        fac = 0
         
         nbs0, _, cx0, cy0 = hpc.eval_phi(domain, dof0)
         nbs1, _, cx1, cy1 = hpc.eval_phi(domain, dof1)
@@ -108,7 +109,7 @@ class PotentialFlowDomain(object):
             elif func_name == 'u1':
                 values[dof] = vel[1]
             elif func_name == 'p':
-                values[dof] = -(vel[0]**2 + vel[1]**2)/2 - (self.phi[dof] - self.phi_old[dof])/dt
+                values[dof] = -(vel[0]**2 + vel[1]**2)*rho/2 - (self.phi[dof] - self.phi_old[dof])*rho/dt
         
         if func_name == 'p':
             values *= rho
@@ -124,7 +125,7 @@ class PotentialFlowDomain(object):
             if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
                 x, y = coord
                 if x > -1e-8:
-                    pass # Coupled to N-S
+                    pass # This dof is coupled to N-S.
                 elif x < -inp.l1 + 1e-8:
                     bcs.append(('Nx', dof, U))
                 elif y > inp.h1/2 - 1e-8:

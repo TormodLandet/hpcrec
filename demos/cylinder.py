@@ -38,10 +38,11 @@ use the Navier-Stokes pressure and the Bernoulli equation to set Dirichlet
 boundary conditions on the potential, phi.
 """
 from __future__ import division
-from cylinder_ns import NavierStokesDomain
-from cylinder_hpc import PotentialFlowDomain
 import numpy
 import scipy.sparse.linalg
+import hpc
+from cylinder_ns import NavierStokesDomain
+from cylinder_hpc import PotentialFlowDomain
 
 
 class Input(object):
@@ -50,24 +51,28 @@ class Input(object):
     h1 = 1    # Height of pot domain
     h2 = 1    # Height of NS domain 
     d = 0.3   # Cylinder diameter
+    f = 2/0.3 # Diameters between cylinder center and inlet
     N1 = N2 = 10
     layout = 'I'
-    coupled = True
+    coupled = False
     
-    U0 = 0.01    # Speed at inlet
+    U0 = 0.1  # Speed at inlet
     rho = 1   # Density
-    Re = 100  # Reynolds number (determines the viscosity)
+    Re = 1000 # Reynolds number (determines the viscosity)
     
-    dt = 0.01    # Timestep
-    tmax = 0.15  # Time duration of the simulation
-    tramp = 0.1
+    dt = 0.01   # Timestep
+    tmax = 0.5  # Time duration of the simulation
+    tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
+    output_step = 1
     
     def inlet_vel(self, t):
-        fac = min(1, t/self.tramp)
+        fac = 1
+        if t < self.tramp:
+            fac = 0.5 - 0.5*numpy.cos(numpy.pi*t/self.tramp)
         return self.U0*fac
 
 
-def main(inp, plot=True, uncoupled=False):
+def main(inp, uncoupled=False):
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
@@ -79,6 +84,7 @@ def main(inp, plot=True, uncoupled=False):
     t = 0
     it = 0
     dt = inp.dt
+    rho = inp.rho
     while t <= inp.tmax + 1e-6 - dt:
         t += dt
         it += 1
@@ -90,8 +96,9 @@ def main(inp, plot=True, uncoupled=False):
         
         if C1 is None:
             # Setup coupling blocks between the two system matrices
-            C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, inp.rho)
+            C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
         
+        phi_prev = pf_domain.phi
         if inp.coupled:
             # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
             for ns_dof, _, _ in ns_u_map:
@@ -101,11 +108,16 @@ def main(inp, plot=True, uncoupled=False):
             # Apply Dirichlet boundary conditions to the potential flow block matrix
             # and update the right hand side vector with the non-linear term from the 
             # previous time step (see the off_diagonal_blocks() function).
-            phi_old = pf_domain.phi_old
             for pf_dof, _, _ in pf_p_map:
-                apply_dirichlet(A2, pf_dof)
-                vel = pf_domain.explicit_velocity_at_dof(pf_dof)            
-                b2[pf_dof] = -(vel[0]**2 + vel[1]**2)/2*dt + phi_old[pf_dof]
+                # Previous/explicit and next/implicit velocity
+                vel_prev = pf_domain.explicit_velocity_at_dof(pf_dof)
+                nbs, _, cdx, cdy = hpc.eval_phi(pf_domain.domain, pf_dof)
+                
+                apply_dirichlet(A2, pf_dof, rho/dt)
+                for nb, wu, wv in zip(nbs, cdx, cdy):
+                    A2[pf_dof,nb] = rho/2*(wu*vel_prev[0] + wv*vel_prev[1])
+                
+                b2[pf_dof] = rho/dt*phi_prev[pf_dof]
         
         else:
             # Remove coupling
@@ -115,10 +127,14 @@ def main(inp, plot=True, uncoupled=False):
                 apply_dirichlet(A1, ns_dof)
                 vel_dir = ns_domain.vel_dir[ns_dof] 
                 b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
+            
             for pf_dof, _, _ in pf_p_map:
-                # Set coupled potential to a constant
-                apply_dirichlet(A2, pf_dof)
-                b2[pf_dof] = 42
+                # Set coupled potential neumann to inlet velocity
+                nbs, _, cdx, _ = hpc.eval_phi(pf_domain.domain, pf_dof)
+                A2[pf_dof, pf_dof] = 0
+                for nb, c in zip(nbs, cdx):
+                    A2[pf_dof, nb] = c
+                b2[pf_dof] = inp.inlet_vel(t)
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -128,7 +144,7 @@ def main(inp, plot=True, uncoupled=False):
         bb[N1:] = b2
         
         # Solve the block matrix system 
-        if inp.N1 < 7:
+        if it == 1 and inp.N1 < 7:
             print 'Cond: %8.2e' % numpy.linalg.cond(AA.todense())
         uu = scipy.sparse.linalg.spsolve(AA, bb)
         
@@ -136,7 +152,33 @@ def main(inp, plot=True, uncoupled=False):
         ns_domain.update(uu[:N1])
         pf_domain.update(uu[N1:])
         
-        if plot:
+        # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
+        if False:
+            for pf_dof, ns_p_dofs, ns_p_weights in pf_p_map:
+                # At coupling location
+                nbs, c, cdx, cdy = hpc.eval_phi(pf_domain.domain, pf_dof)
+                phi = pf_domain.phi[pf_dof]
+                phi_p = pf_domain.phi_old[pf_dof]
+                phi2 = sum(w*pf_domain.phi[nb] for nb, w in zip(nbs, c))
+                dphidx = sum(w*pf_domain.phi_old[nb] for nb, w in zip(nbs, cdx)) 
+                dphidy = sum(w*pf_domain.phi_old[nb] for nb, w in zip(nbs, cdy))
+                vel = [dphidx, dphidy]
+                vel_p = pf_domain.explicit_velocity_at_dof(pf_dof)
+                
+                p1 = -rho/2*(vel[0]*vel_p[0] + vel[1]*vel_p[1])
+                p2 = -rho/dt*(phi - phi_p) 
+                p = p1 + p2
+                
+                p_ns = 0
+                for d, w in zip(ns_p_dofs, ns_p_weights):
+                    p_ns += uu[d]*w
+                
+                print '%2d - % 8.2e % 8.2e - % 8.2e % 8.2e - % 8.2e % 8.2e % 8.2e' % (
+                        pf_dof, phi, (phi-phi2)/phi, dphidx, dphidy, p1, p2, p),
+                print ' - % 8.2e % 8.2e' % (p_ns, (p_ns-p)/p_ns)
+        # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
+        
+        if it % inp.output_step == 0:
             fig = plot_domains(inp, ns_domain, pf_domain)
             fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
             
@@ -147,7 +189,7 @@ def main(inp, plot=True, uncoupled=False):
         #exit()
 
 
-def get_domain_coupling(ns_domain, pf_domain):
+def get_domain_coupling(ns_domain, pf_domain, geps=1e-8):
     """
     As a preprocessor we run through all lines separating the potential flow
     and the Navier-Stokes domains and get the mapping of dofs between the
@@ -175,11 +217,11 @@ def get_domain_coupling(ns_domain, pf_domain):
                 pf_dof0, pf_coord0 = pf_dof_coords[i]
                 pf_dof1, pf_coord1 = pf_dof_coords[i+1]
                 
-                # Search until we find a match on the potential flow side 
-                match_x = pf_coord0[0] <= ns_coord[0] <= pf_coord1[0]
-                match_y = pf_coord0[1] <= ns_coord[1] <= pf_coord1[1]  
+                # Search until we find a match on the potential flow side
+                match_x = pf_coord0[0] - geps < ns_coord[0] < pf_coord1[0]  + geps
+                match_y = pf_coord0[1] - geps < ns_coord[1] < pf_coord1[1] + geps
                 if match_x and match_y:
-                    # Get the weights 
+                    # Get the weights
                     dofs, weights = pf_domain.get_neumann_weights(ns_dir, ns_coord,
                                                                   pf_dof0, pf_dof1)
                     ns_u_map.append((ns_dof, dofs, weights))
@@ -206,7 +248,7 @@ def get_domain_coupling(ns_domain, pf_domain):
     return ns_u_map, pf_p_map
 
 
-def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
+def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map):
     """
     Return block matrices C1 and C2 which will be inserted as
     
@@ -235,12 +277,12 @@ def off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map, dt, rho):
     # where we have used first order backward time differencing.
     for pf_dof, ns_p_dofs, ns_p_weights in pf_p_map:
         for d, w in zip(ns_p_dofs, ns_p_weights):
-            C2[pf_dof, d] = w*dt/rho
+            C2[pf_dof, d] = w
     
     return C1.tocsr(), C2.tocsr()
 
 
-def apply_dirichlet(A, row):
+def apply_dirichlet(A, row, diag_value=1):
     """
     Set row to be an identity row
         A[row,:] = 0
@@ -250,11 +292,7 @@ def apply_dirichlet(A, row):
     cols = A.indices[j0:j1]
     for col in cols:
         A[row,col] = 0
-    A[row,row] = 1
-    
-    # Debug
-    r = A.getrow(row)
-    assert abs(r).sum() == 1 and A[row,row] == 1
+    A[row,row] = diag_value
 
 
 def plot_domains(inp, ns_domain, pf_domain):
@@ -285,10 +323,13 @@ def plot_domains(inp, ns_domain, pf_domain):
         values[i,:Nv_ns] = ns_domain.get_data(func_name)
         values[i,Nv_ns:] = pf_domain.get_data(func_name) 
     
+    # Scaling
+    scale_u = inp.U0
+    scale_p = inp.U0**2*inp.rho
+    
     # Get color bar limits
-    #maxabs_u = max(abs(values[0]).max(), abs(values[1]).max())
-    maxabs_u = abs(inp.U0)*1.5
-    maxabs_p = abs(values[2]).max()
+    maxabs_u = 2.5
+    maxabs_p = abs(values[2]).max()/scale_p
     
     # Get figure and axes
     if hasattr(inp, '_plot_domains_save'):
@@ -313,9 +354,9 @@ def plot_domains(inp, ns_domain, pf_domain):
     params = dict(shading='gouraud', cmap=cmap)
     
     # Plot functions on triangulation
-    Cu  = axes[0].tripcolor(mesh, values[0], vmin=-maxabs_u, vmax=maxabs_u, **params)
-    _   = axes[1].tripcolor(mesh, values[1], vmin=-maxabs_u, vmax=maxabs_u, **params)
-    Cp  = axes[2].tripcolor(mesh, values[2], vmin=-maxabs_p, vmax=maxabs_p, **params)
+    Cu  = axes[0].tripcolor(mesh, values[0]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
+    _   = axes[1].tripcolor(mesh, values[1]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
+    Cp  = axes[2].tripcolor(mesh, values[2]/scale_p, vmin=-maxabs_p, vmax=maxabs_p, **params)
     
     # Plot triangulation mesh lightly above the functions
     for ax in axes[:3]:
@@ -345,4 +386,6 @@ if __name__ == '__main__':
     inp = Input()
     inp.N1 = inp.N2 = args.N
     inp.coupled = not args.uncoupled
-    main(inp, plot=args.plot)
+    if not args.plot:
+        inp.output_step = 1e100 
+    main(inp)
