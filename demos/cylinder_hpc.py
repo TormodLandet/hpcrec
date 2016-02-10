@@ -16,6 +16,8 @@ class PotentialFlowDomain(object):
         self.domain = hpc.rectangle_domain(p0, p1, Nx, Ny)
         self.phi = numpy.zeros(len(self.domain.dof_coordinates), float)
         self.phi_old = numpy.zeros_like(self.phi)
+        self._tensor_cache = None
+        self._bc_cache = None
     
     def get_dividing_line(self, line_number):
         """
@@ -74,10 +76,24 @@ class PotentialFlowDomain(object):
         Return linear system with normal BCs applied (not coupled)
         Matrix format is SciPy CSR
         """
-        A, b = hpc.assemble(self.domain)
-        bcs = self._get_boundary_conditions(t)
-        hpc.apply_bcs(self.domain, A, b, bcs)
-        return A.csr_matrix, b.array()
+        # The matrices are time invariant
+        if self._tensor_cache is None:
+            A, b = hpc.assemble(self.domain)
+            self._tensor_cache = A.csr_matrix, b.array()
+        A, b = self._tensor_cache
+        
+        # Apply boundary conditions (time dependent)
+        U0 = self.input.inlet_vel(t)
+        if self._bc_cache is None:
+            bcs, inlet_dofs = self._get_boundary_conditions(t)
+            hpc.apply_bcs(self.domain, A, b, bcs)
+            self._bc_cache = (U0, inlet_dofs)
+        Uprev, inlet_dofs = self._bc_cache
+        if U0 != Uprev:
+            for dof in inlet_dofs:
+                b[dof] = U0
+        
+        return A, b
     
     def explicit_velocity_at_dof(self, dof):
         neighbours, _coeffs, coeffsdx, coeffsdy = hpc.eval_phi(self.domain, dof)
@@ -115,18 +131,19 @@ class PotentialFlowDomain(object):
         
         return values
     
-    def _get_boundary_conditions(self, t):
+    def _get_boundary_conditions(self, U0):
         inp, domain = self.input, self.domain
-        U = inp.inlet_vel(t)
         
         bcs = []
+        inlet_dofs = []
         for dof, coord in enumerate(domain.dof_coordinates): 
             if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
                 x, y = coord
                 if x > -1e-8:
                     pass # This dof is coupled to N-S.
                 elif x < -inp.l1 + 1e-8:
-                    bcs.append(('Nx', dof, U))
+                    bcs.append(('Nx', dof, U0))
+                    inlet_dofs.append(dof)
                 elif y > inp.h1/2 - 1e-8:
                     bcs.append(('Ny', dof, 0.0))
                 elif y < -inp.h1/2 + 1e-8:
@@ -134,4 +151,4 @@ class PotentialFlowDomain(object):
                 else:
                     raise 'this should not happen!'
         
-        return bcs
+        return bcs, inlet_dofs

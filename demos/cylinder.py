@@ -38,11 +38,13 @@ use the Navier-Stokes pressure and the Bernoulli equation to set Dirichlet
 boundary conditions on the potential, phi.
 """
 from __future__ import division
+import time
 import numpy
 import scipy.sparse.linalg
 import hpc
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
+from utilities import SimpleLog
 
 
 class Input(object):
@@ -50,30 +52,32 @@ class Input(object):
     l2 = 4    # Length of NS domain
     h1 = 1    # Height of pot domain
     h2 = 1    # Height of NS domain 
-    d = 0.3   # Cylinder diameter
-    f = 2/0.3 # Diameters between cylinder center and inlet
-    N1 = N2 = 10
+    d = 0.1   # Cylinder diameter
+    f = 3     # Diameters between cylinder center and inlet
     layout = 'I'
-    coupled_domains = False
-    
     
     U0 = 0.1  # Speed at inlet
     rho = 1   # Density
     Re = 1000 # Reynolds number (determines the viscosity)
     
     dt = 0.01   # Timestep
-    tmax = 0.5  # Time duration of the simulation
+    tmax = 10.0 # Time duration of the simulation
     tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
-    output_step = 1
+    output_step = 10
     
     def inlet_vel(self, t):
         fac = 1
         if t < self.tramp:
             fac = 0.5 - 0.5*numpy.cos(numpy.pi*t/self.tramp)
         return self.U0*fac
-
+    
+    # Overwritten by command line parameters:
+    N1 = N2 = 10            # Geometric discretisation
+    coupled_domains = True  # Coupling can be turned off to test the solvers separately
+    
 
 def main(inp):
+    log = SimpleLog('cylinder.log')
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
@@ -89,53 +93,53 @@ def main(inp):
     while t <= inp.tmax + 1e-6 - dt:
         t += dt
         it += 1
-        print 'Timestep %8.4f' % t
+        timer_ts_start = time.time()
+        log.info('Timestep %8.4f' % t)
         
         # Assemble the two system matrices
-        A1, b1 = ns_domain.get_system(t)
-        A2, b2 = pf_domain.get_system(t)
+        with log.timer('  Assemble: '):
+            A1, b1 = ns_domain.get_system(t)
+            A2, b2 = pf_domain.get_system(t)
         
-        if C1 is None:
-            # Setup coupling blocks between the two system matrices
-            C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
-        
-        phi_prev = pf_domain.phi
-        if inp.coupled_domains:
-            # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
-            for ns_dof, _, _ in ns_u_map:
-                apply_dirichlet(A1, ns_dof)
-                b1[ns_dof] = 0
+        # Setup coupling matrices
+        with log.timer('  Couple: '):
+            if C1 is None:
+                # Setup coupling blocks between the two system matrices
+                C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
             
-            # Apply Dirichlet boundary conditions to the potential flow block matrix
-            # and update the right hand side vector with the non-linear term from the 
-            # previous time step (see the off_diagonal_blocks() function).
-            for pf_dof, _, _ in pf_p_map:
-                # Previous/explicit and next/implicit velocity
-                vel_prev = pf_domain.explicit_velocity_at_dof(pf_dof)
-                nbs, _, cdx, cdy = hpc.eval_phi(pf_domain.domain, pf_dof)
+            phi_prev = pf_domain.phi
+            if inp.coupled_domains:
+                # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
+                for ns_dof, _, _ in ns_u_map:
+                    apply_dirichlet(A1, ns_dof)
+                    b1[ns_dof] = 0
                 
-                apply_dirichlet(A2, pf_dof, rho/dt)
-                for nb, wu, wv in zip(nbs, cdx, cdy):
-                    A2[pf_dof,nb] = rho/2*(wu*vel_prev[0] + wv*vel_prev[1])
-                
-                b2[pf_dof] = rho/dt*phi_prev[pf_dof]
-        
-        else:
-            # Remove coupling
-            C1 *= 0; C2 *= 0
-            for ns_dof, _, _ in ns_u_map:
-                # Set coupled velocity to inlet velocity 
-                apply_dirichlet(A1, ns_dof)
-                vel_dir = ns_domain.vel_dir[ns_dof] 
-                b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
+                # Apply Dirichlet boundary conditions to the potential flow block matrix
+                # and update the right hand side vector with the non-linear term from the 
+                # previous time step (see the off_diagonal_blocks() function).
+                for pf_dof, _, _ in pf_p_map:
+                    # Previous/explicit and next/implicit velocity
+                    vel_prev = pf_domain.explicit_velocity_at_dof(pf_dof)
+                    nbs, _, cdx, cdy = hpc.eval_phi(pf_domain.domain, pf_dof)
+                    
+                    apply_dirichlet(A2, pf_dof, rho/dt)
+                    for nb, wu, wv in zip(nbs, cdx, cdy):
+                        A2[pf_dof,nb] = rho/2*(wu*vel_prev[0] + wv*vel_prev[1])
+                    
+                    b2[pf_dof] = rho/dt*phi_prev[pf_dof]
             
-            for pf_dof, _, _ in pf_p_map:
-                # Set coupled potential neumann to inlet velocity
-                nbs, _, cdx, _ = hpc.eval_phi(pf_domain.domain, pf_dof)
-                A2[pf_dof, pf_dof] = 0
-                for nb, c in zip(nbs, cdx):
-                    A2[pf_dof, nb] = c
-                b2[pf_dof] = inp.inlet_vel(t)
+            else:
+                # Remove coupling
+                C1 *= 0; C2 *= 0
+                for ns_dof, _, _ in ns_u_map:
+                    # Set coupled velocity to inlet velocity 
+                    apply_dirichlet(A1, ns_dof)
+                    vel_dir = ns_domain.vel_dir[ns_dof] 
+                    b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
+                for pf_dof, _, _ in pf_p_map:
+                    # Set coupled potential to a constant value
+                    apply_dirichlet(A2, pf_dof)
+                    b2[pf_dof] = 42
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -144,14 +148,27 @@ def main(inp):
         bb[:N1] = b1
         bb[N1:] = b2
         
-        # Solve the block matrix system 
-        if it == 1 and inp.N1 < 7:
-            print 'Cond: %8.2e' % numpy.linalg.cond(AA.todense())
-        uu = scipy.sparse.linalg.spsolve(AA, bb)
+        # Solve the block matrix system
+        with log.timer('  Solve: '): 
+            uu = scipy.sparse.linalg.spsolve(AA, bb)
         
         # Update the solutions in the two sub-domains
         ns_domain.update(uu[:N1])
         pf_domain.update(uu[N1:])
+        
+        with log.timer('  Plot: '):
+            if it % inp.output_step == 0:
+                fig = plot_domains(inp, ns_domain, pf_domain)
+                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
+                
+                #from matplotlib import pyplot
+                #pyplot.figure()
+                #pyplot.spy(AA.todense())
+                #pyplot.show()
+        
+        log.info('  Timestep: %4.2fs\n' % (time.time() - timer_ts_start))
+        if it == 1 and inp.N1 < 7:
+            log.info('Cond: %8.2e\n' % numpy.linalg.cond(AA.todense()))
         
         # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
         if False:
@@ -178,16 +195,6 @@ def main(inp):
                         pf_dof, phi, (phi-phi2)/phi, dphidx, dphidy, p1, p2, p),
                 print ' - % 8.2e % 8.2e' % (p_ns, (p_ns-p)/p_ns)
         # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
-        
-        if it % inp.output_step == 0:
-            fig = plot_domains(inp, ns_domain, pf_domain)
-            fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
-            
-            #from matplotlib import pyplot
-            #pyplot.figure()
-            #pyplot.spy(AA.todense())
-            #pyplot.show()
-        #exit()
 
 
 def get_domain_coupling(ns_domain, pf_domain, geps=1e-8):
@@ -290,9 +297,7 @@ def apply_dirichlet(A, row, diag_value=1):
         A[row,row] = 1
     """
     j0, j1 = A.indptr[row], A.indptr[row+1]
-    cols = A.indices[j0:j1]
-    for col in cols:
-        A[row,col] = 0
+    A.data[j0:j1] = 0
     A[row,row] = diag_value
 
 
@@ -339,13 +344,14 @@ def plot_domains(inp, ns_domain, pf_domain):
             ax.clear()
     else:
         fig = pyplot.figure(figsize=(12, 9))
-        axes = [None]*5
-        axes[0] = fig.add_axes([0.02, 0.66, 0.80, 0.33])
-        axes[1] = fig.add_axes([0.02, 0.33, 0.80, 0.33])
-        axes[2] = fig.add_axes([0.02, 0.00, 0.80, 0.33])
+        axes = [None]*6
+        axes[0] = fig.add_axes([0.02, 0.75, 0.80, 0.25])
+        axes[1] = fig.add_axes([0.02, 0.50, 0.80, 0.25])
+        axes[2] = fig.add_axes([0.02, 0.25, 0.80, 0.25])
+        axes[3] = fig.add_axes([0.02, 0.00, 0.80, 0.25])
         # Colorbar axes
-        axes[3] = fig.add_axes([0.85, 0.55, 0.05, 0.35])
-        axes[4] = fig.add_axes([0.85, 0.10, 0.05, 0.35])
+        axes[4] = fig.add_axes([0.85, 0.55, 0.05, 0.35])
+        axes[5] = fig.add_axes([0.85, 0.10, 0.05, 0.35])
         
     # Setup color map to be blue via white to red with out of range colors cyan and pink
     cmap = pyplot.cm.get_cmap('RdBu_r')
@@ -364,12 +370,12 @@ def plot_domains(inp, ns_domain, pf_domain):
         ax.triplot(mesh, c='#cccccc', lw=0.2)
     
     # Colorbars
-    fig.colorbar(Cu, cax=axes[3])
-    fig.colorbar(Cp, cax=axes[4])
+    fig.colorbar(Cu, cax=axes[4])
+    fig.colorbar(Cp, cax=axes[5])
     
-    for ax in axes[:3]:
+    for ax in axes[:4]:
         ax.axis('off')
-        ax.plot([0, 0], [-inp.h2/2, inp.h2/2], ':k')
+        #ax.plot([0, 0], [-inp.h2/2, inp.h2/2], ':k')
     
     inp._plot_domains_save = fig, axes
     return fig
