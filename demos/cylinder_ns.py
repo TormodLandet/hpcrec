@@ -3,8 +3,8 @@ from __future__ import division
 import subprocess
 import dolfin as df
 from dolfin import dx, div, grad, dot
-import scipy.sparse
 import numpy
+from utilities import mat_to_csr
 
 
 class NavierStokesDomain(object):
@@ -142,11 +142,6 @@ class NavierStokesWeakForm(object):
                 m1, m2, m3 = taua.min(), taua.mean(), taua.max() 
                 print m1, m2, m3
                 print m3/m1, m3/m2, m2/m1
-                
-                if U0 == 0.01:
-                    df.plot(self.tau)
-                    df.interactive()
-                    exit()
         
         # Assemble the form and apply BCs
         a, L = self._weak_form
@@ -195,10 +190,8 @@ class NavierStokesWeakForm(object):
         cell = self.mesh.ufl_cell()
         e_u = df.FiniteElement('CG', cell, self.input.Pu)
         e_p = df.FiniteElement('CG', cell, self.input.Pp)
-        e_l = df.FiniteElement('R', cell, 0)
         V = df.FunctionSpace(self.mesh, e_u)
         Q = df.FunctionSpace(self.mesh, e_p)
-        L = df.FunctionSpace(self.mesh, e_l)
         
         # Current time step
         self.u0 = df.Function(V)
@@ -206,11 +199,14 @@ class NavierStokesWeakForm(object):
         # Convective velocity
         self.u_conv0 = df.Function(V)
         self.u_conv1 = df.Function(V)
-        # Pressure and Lagrange multiplier
+        # Pressure
         self.p = df.Function(Q)
-        self.l = df.Function(L)
         
         if self.use_lagrange_multiplicator:
+            e_l = df.FiniteElement('R', cell, 0)
+            L = df.FunctionSpace(self.mesh, e_l)
+            self.l = df.Function(L)
+            
             elements = [e_u, e_u, e_p, e_l]
             func_spaces = [V, V, Q, L]
             self.functions = [self.u0, self.u1, self.p, self.l]
@@ -388,8 +384,8 @@ class NavierStokesWeakForm(object):
             a = dot(u_conv, u_conv)**0.5 + df.Constant(2e-16)
             h = df.CellSize(self.mesh)
             nu = mu/rho
-            tau = ((2*a/h)**2 + 9*(4*nu/h**2)**2 + (rho/dt)**2*0)**-0.5
-            tau = h/(2*a)*df.Constant(1)
+            tau = ((2*a/h)**2 + 9*(4*nu/h**2)**2 + (rho/dt)**2)**-0.5
+            #tau = h/(2*a)*df.Constant(1)
             
             # Tau has a large polynomial degree making quadrature slow. 
             # Let's bring it down to DG0 via a local projection
@@ -405,30 +401,6 @@ class NavierStokesWeakForm(object):
         
         # Store the weak form for assembly
         self._weak_form = df.system(eq)
-
-
-def mat_to_csr(dolfin_matrix):
-    """
-    Convert any dolfin.Matrix to csr matrix in scipy.
-    Based on code by Miroslav Kuchta
-    """
-    assert df.MPI.size(df.mpi_comm_world()) == 1, 'mat_to_csr assumes single process'
-    
-    rows = [0]
-    cols = []
-    values = []
-    for irow in range(dolfin_matrix.size(0)):
-        indices, values_ = dolfin_matrix.getrow(irow)
-        rows.append(len(indices)+rows[-1])
-        cols.extend(indices)
-        values.extend(values_)
-
-    shape = dolfin_matrix.size(0), dolfin_matrix.size(1)
-        
-    return scipy.sparse.csr_matrix((numpy.array(values, dtype='float'),
-                                    numpy.array(cols, dtype='int'),
-                                    numpy.array(rows, dtype='int')),
-                                    shape)
 
 
 if __name__ == '__main__':
@@ -457,7 +429,7 @@ if __name__ == '__main__':
     inp = Input()
     inp.problem = 'Taylor-Green'
     inp.N1 = inp.N2 = N
-    inp.tmax = 1.0
+    inp.tmax = 10.0
     inp.dt = 0.01
     inp.output_step = output_step
     inp.rho = 1
@@ -475,6 +447,7 @@ if __name__ == '__main__':
     it = 0
     dt = inp.dt
     rho = inp.rho
+    timer_loop_start = time.time()
     while t <= inp.tmax + 1e-6 - dt:
         t += dt
         it += 1
@@ -506,3 +479,4 @@ if __name__ == '__main__':
         eu0 = df.errornorm(u0a, u0, degree_rise=0)
         eu1 = df.errornorm(u1a, u1, degree_rise=0)
         log.info('  ERRORS: %8.2e %8.2e\n' % (eu0, eu1))
+    log.info('DONE in %.2fs\n' % (time.time() - timer_loop_start))

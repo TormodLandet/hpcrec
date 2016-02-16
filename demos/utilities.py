@@ -1,5 +1,8 @@
 # encoding: utf8
 import sys, time, contextlib
+import numpy
+import scipy.sparse
+import dolfin as df
 
 
 RED = '\033[91m%s\033[0m'    # ANSI escape code Bright Red
@@ -50,3 +53,27 @@ class SimpleLog(object):
         yield
         duration = time.time() - t_start
         self.info(post_message % duration)
+
+
+def mat_to_csr(dolfin_matrix):
+    """
+    Convert any dolfin.Matrix to csr matrix in scipy.
+    Based on code by Miroslav Kuchta
+    """
+    assert df.MPI.size(df.mpi_comm_world()) == 1, 'mat_to_csr assumes single process'
+    
+    rows = [0]
+    cols = []
+    values = []
+    for irow in range(dolfin_matrix.size(0)):
+        indices, values_ = dolfin_matrix.getrow(irow)
+        rows.append(len(indices)+rows[-1])
+        cols.extend(indices)
+        values.extend(values_)
+
+    shape = dolfin_matrix.size(0), dolfin_matrix.size(1)
+        
+    return scipy.sparse.csr_matrix((numpy.array(values, dtype='float'),
+                                    numpy.array(cols, dtype='int'),
+                                    numpy.array(rows, dtype='int')),
+                                    shape)
