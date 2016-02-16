@@ -15,6 +15,7 @@ class NavierStokesDomain(object):
             self.num_dividing_lines = 1
         
         self.form = NavierStokesWeakForm(inp)
+        self.h = self.form.mesh.hmin()
         
     def get_dividing_line(self, line_number):
         """
@@ -75,10 +76,7 @@ class NavierStokesDomain(object):
         Return linear system with normal BCs applied (not coupled)
         Matrix format is SciPy CSR
         """
-        a, L = self.form.weak_form
-        bcs = self.form.dirichlet_bcs
-        self.form.u_outlet.assign(df.Constant(self.input.inlet_vel(t)))
-        A, b = df.assemble_system(a, L, bcs)
+        A, b = self.form.assemble(self.input.inlet_vel(t), t)
         b_np = b.array()
         A_sp = mat_to_csr(A)
         return A_sp, b_np
@@ -91,15 +89,10 @@ class NavierStokesDomain(object):
         w = self.form.func
         w.vector().set_local(res)
         
-        # Spread to the component vectors 
-        u0, u1 = self.form.u0, self.form.u1
+        # Spread to the component vectors
         self.form.assigner.assign(self.form.functions, w)
         for func in self.form.functions:
             func.vector().apply('insert') # dolfin bug #587
-        
-        # Update convection
-        self.form.u_conv0.assign(u0)
-        self.form.u_conv1.assign(u1)
     
     def get_triangulation(self):
         """
@@ -123,7 +116,8 @@ class NavierStokesDomain(object):
 class NavierStokesWeakForm(object):
     def __init__(self, inp):
         self.input = inp
-        self.use_lagrange_multiplicator = True#not inp.coupled_domains
+        self.use_lagrange_multiplicator = inp.pressure_lagrange_multiplier
+        self.use_supg = inp.use_supg
         self._create_mesh()
         self._create_functions()
         self._create_boundary_conditions()
@@ -132,13 +126,41 @@ class NavierStokesWeakForm(object):
         # Show mesh
         #df.plot(self.marker)
         #df.interactive()
+        self._tensors = None, None
+        
+    def assemble(self, U0, t):
+        # Update coefficients used in the form
+        self.U0.assign(df.Constant(U0))
+        self.t.assign(df.Constant(t))
+        self.u_conv0.assign(self.u0)
+        self.u_conv1.assign(self.u1)
+        if self.use_supg:
+            self.tau_solver.solve_local_rhs(self.tau)
+            if False:
+                taua = self.tau.vector().array()
+                print
+                m1, m2, m3 = taua.min(), taua.mean(), taua.max() 
+                print m1, m2, m3
+                print m3/m1, m3/m2, m2/m1
+                
+                if U0 == 0.01:
+                    df.plot(self.tau)
+                    df.interactive()
+                    exit()
+        
+        # Assemble the form and apply BCs
+        a, L = self._weak_form
+        A, b = self._tensors
+        A, b = df.assemble_system(a, L, self.dirichlet_bcs,
+                                  A_tensor=A, b_tensor=b)
+        return A, b
     
-    def _create_mesh(self, skip_cylinder=False):
+    def _create_mesh(self):
         # Geometry
         x0, x1 = 0, self.input.l2
         y0, y1 = -self.input.h2/2, self.input.h2/2
         
-        if skip_cylinder:
+        if self.input.problem != 'Cylinder':
             # Create mesh
             p0 = df.Point(x0, y0)
             p1 = df.Point(x1, y1)
@@ -171,8 +193,8 @@ class NavierStokesWeakForm(object):
     def _create_functions(self):
         # Elements and function spaces for the individual components
         cell = self.mesh.ufl_cell()
-        e_u = df.FiniteElement('CG', cell, 2)
-        e_p = df.FiniteElement('CG', cell, 1)
+        e_u = df.FiniteElement('CG', cell, self.input.Pu)
+        e_p = df.FiniteElement('CG', cell, self.input.Pp)
         e_l = df.FiniteElement('R', cell, 0)
         V = df.FunctionSpace(self.mesh, e_u)
         Q = df.FunctionSpace(self.mesh, e_p)
@@ -231,24 +253,55 @@ class NavierStokesWeakForm(object):
             mark(marker, 1, lambda x, on_boundary: on_boundary and df.near(x[1], y0)) # bottom
             mark(marker, 3, lambda x, on_boundary: on_boundary and df.near(x[1], y1)) # top
         
+        # External facet region marker and integration measure
+        self.marker = marker
+        self.ds = df.Measure('ds')(subdomain_data=marker)
+        
+        # "Constants" that are changed every time step before assembly
+        self.U0 = df.Constant(0)
+        self.t = df.Constant(0)
+        
         # Dirichlet boundary conditions
         W = self.funcspace
         zero = df.Constant(0)
-        uout = self.u_outlet = df.Constant(0)
-        self.dirichlet_bcs = [#df.DirichletBC(W.sub(0), zero, marker, 4), # u0 coupled
-                              #df.DirichletBC(W.sub(1), zero, marker, 4), # u1 coupled
-                              #df.DirichletBC(W.sub(0), uout, marker, 2), # u0 outlet
-                              df.DirichletBC(W.sub(1), zero, marker, 2), # u1 outlet
-                              df.DirichletBC(W.sub(1), zero, marker, 1), # u1 bottom
-                              df.DirichletBC(W.sub(1), zero, marker, 3)] # u1 top
         
-        if has_cylinder:
-            self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), zero, marker, 5)) # u0 cylinder
-            self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 5)) # u1 cylinder
+        if self.input.problem == 'Cylinder':
+            self.dirichlet_bcs = [# Inlet BCs (will be overwritten by coupling)
+                                  df.DirichletBC(W.sub(0), self.U0, marker, 2),
+                                  df.DirichletBC(W.sub(1), zero, marker, 2),
+                                  # Outlet BCs
+                                  #df.DirichletBC(W.sub(0), uout, marker, 2),
+                                  #df.DirichletBC(W.sub(1), zero, marker, 2),
+                                  # Bottom BCs
+                                  #df.DirichletBC(W.sub(0), self.U0, marker, 1),
+                                  df.DirichletBC(W.sub(1), zero, marker, 1),
+                                  # Top BCs
+                                  #df.DirichletBC(W.sub(0), self.U0, marker, 3),
+                                  df.DirichletBC(W.sub(1), zero, marker, 3),
+                                  # Cylinder BCs
+                                  df.DirichletBC(W.sub(0), zero, marker, 5),
+                                  df.DirichletBC(W.sub(1), zero, marker, 5)]
+            self.pressure_ds_boundaries = [1, 3, 4, 5]
+            self.pressure_outlet_boundaries = [2]
+            self.velocity_ds_boundaries = [1, 2, 3, 4, 5]
         
-        self.marker = marker
-        self.ds = df.Measure('ds')(subdomain_data=marker)
-        self.pressure_neumann_boundaries = [1, 2, 3, 4, 5]
+        elif self.input.problem == 'Taylor-Green':
+            params = dict(nu=self.input.mu/self.input.rho,
+                          t=self.t,
+                          element=W.sub(0).ufl_element())
+            f1 = df.Expression('-sin(pi*x[1]) * cos(pi*x[0]) * exp(-2*pi*pi*nu*t)', **params)
+            f2 = df.Expression(' sin(pi*x[0]) * cos(pi*x[1]) * exp(-2*pi*pi*nu*t)', **params)
+            dbcs = [df.DirichletBC(W.sub(0), f1, lambda x, on_boundary: on_boundary),
+                    df.DirichletBC(W.sub(1), f2, lambda x, on_boundary: on_boundary)]
+            self.dirichlet_bcs = dbcs
+            self.pressure_ds_boundaries = [1, 2, 3, 4]
+            self.pressure_outlet_boundaries = []
+            self.velocity_ds_boundaries = []
+            
+            # Initial conditions
+            df.project(f1, self.u0.function_space(), function=self.u0)
+            df.project(f2, self.u1.function_space(), function=self.u1)
+            self.u_expressions = (f1, f2)
     
     def _create_weak_form(self):
         # Trial and test functions
@@ -265,7 +318,7 @@ class NavierStokesWeakForm(object):
         inp = self.input
         rho = df.Constant(inp.rho)
         dt = df.Constant(inp.dt)
-        mu = df.Constant(inp.d*inp.U0*inp.rho/inp.Re)
+        mu = df.Constant(inp.mu)
         g = df.Constant([0, 0])
         n = df.FacetNormal(self.mesh)
         ds = self.ds
@@ -277,6 +330,7 @@ class NavierStokesWeakForm(object):
         else:
             eq = 0
         
+        # The weak form of the momentum equation and the divergence free criterion
         for d in range(2):
             # Divergence free criterion
             # ∇⋅u = 0
@@ -285,10 +339,11 @@ class NavierStokesWeakForm(object):
             # Time derivative
             # ∂u/∂t
             eq += rho*(u[d] - up[d])/dt*v[d]*dx
-            
+                        
             # Convection
             # ∇⋅(ρ u ⊗ u_conv)
-            eq += div(rho*u[d]*u_conv)*v[d]*dx
+            #eq += div(rho*u[d]*u_conv)*v[d]*dx
+            eq += rho*dot(u_conv, grad(u[d]))*v[d]*dx
             
             # Diffusion
             # -∇⋅μ(∇u)
@@ -302,18 +357,60 @@ class NavierStokesWeakForm(object):
             # ρ g
             eq -= rho*g[d]*v[d]*dx
         
+        # Velocity boundary integrals, from integration by parts
+        for region in self.velocity_ds_boundaries:
+            # Convection
+            #eq += rho*dot(u_conv, n)*dot(u, v)*ds(region)
+            # Diffusion
+            for d in range(2):
+                eq -= mu*dot(grad(u[d]), n)*v[d]*ds(region)
+        
         # Pressure boundary integral, from integration by parts
-        for region in self.pressure_neumann_boundaries:
+        for region in self.pressure_ds_boundaries:
             eq += p*dot(n, v)*ds(region)
         
+        # Pressure boundary integral from outlet boundary condition
+        # μ ∂u_n/∂n - p = F_n = 0
+        for region in self.pressure_outlet_boundaries:
+            un = dot(u, n)
+            eq += mu*dot(n, grad(un))*dot(n, v)*ds(region)
+        
+        # The residual of the momentum equation
+        rs = rho*(u - up)/dt
+        rs += rho*dot(grad(u), u_conv)
+        rs -= mu*div(grad(u))
+        rs += grad(p)
+        rs -= rho*g
+        
+        # Add SUPG stabilization
+        if self.use_supg:
+            # Define param used to weight the stabilization
+            a = dot(u_conv, u_conv)**0.5 + df.Constant(2e-16)
+            h = df.CellSize(self.mesh)
+            nu = mu/rho
+            tau = ((2*a/h)**2 + 9*(4*nu/h**2)**2 + (rho/dt)**2*0)**-0.5
+            tau = h/(2*a)*df.Constant(1)
+            
+            # Tau has a large polynomial degree making quadrature slow. 
+            # Let's bring it down to DG0 via a local projection
+            Vtau = df.FunctionSpace(self.mesh, 'DG', 0)
+            utau, vtau = df.TrialFunction(Vtau), df.TestFunction(Vtau)
+            self.tau_solver = df.LocalSolver(utau*vtau*dx, tau*vtau*dx)
+            self.tau_solver.factorize()
+            self.tau = df.Function(Vtau)
+            
+            # Multiply with the residual to ensure consistency
+            v_supg = dot(grad(v), u_conv)*self.tau
+            eq += dot(v_supg, rs)*dx
+        
         # Store the weak form for assembly
-        self.weak_form = df.system(eq)
+        self._weak_form = df.system(eq)
 
 
 def mat_to_csr(dolfin_matrix):
     """
     Convert any dolfin.Matrix to csr matrix in scipy.
-    Based on code by Miro Kuchta
+    Based on code by Miroslav Kuchta
     """
     assert df.MPI.size(df.mpi_comm_world()) == 1, 'mat_to_csr assumes single process'
     
@@ -332,3 +429,80 @@ def mat_to_csr(dolfin_matrix):
                                     numpy.array(cols, dtype='int'),
                                     numpy.array(rows, dtype='int')),
                                     shape)
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-N', type=int, default=10,
+                        help='number of elements over the height')
+    parser.add_argument('-s', '--output-step', type=int, default=1e100,
+                        help='timesteps between each generated plot')
+    parser.add_argument('--no-supg', action='store_true')
+    args = parser.parse_args()
+    N = args.N
+    output_step = args.output_step
+    use_supg = not args.no_supg
+    
+    ###########################################################################
+    # Set up Taylor-Green vortex test case to test the Navier-Stokes
+    # solver separately from the potentilal flow and domain coupling
+    import time
+    from cylinder import Input, plot_domains
+    from utilities import SimpleLog
+    import scipy.sparse.linalg
+    
+    log = SimpleLog('taylor-green.log')
+    
+    inp = Input()
+    inp.problem = 'Taylor-Green'
+    inp.N1 = inp.N2 = N
+    inp.tmax = 1.0
+    inp.dt = 0.01
+    inp.output_step = output_step
+    inp.rho = 1
+    inp.U0 = 1/2.5 # same magnitudes in the plots as the Cylinder
+    nu = 1e-6
+    inp.d = 1
+    inp.Re = inp.U0*inp.d/nu
+    inp.pressure_lagrange_multiplier = True
+    inp.use_supg = use_supg
+    
+    ns_domain = NavierStokesDomain(inp)
+    
+    # Time loop
+    t = 0
+    it = 0
+    dt = inp.dt
+    rho = inp.rho
+    while t <= inp.tmax + 1e-6 - dt:
+        t += dt
+        it += 1
+        timer_ts_start = time.time()
+        log.info('Timestep %5d  t: %8.4f' % (it, t))
+        
+        # Assemble the system matrix
+        with log.timer('  Assemble: '):
+            A, b = ns_domain.get_system(t)
+        
+        # Solve the system matrix
+        with log.timer('  Solve: '): 
+            uu = scipy.sparse.linalg.spsolve(A, b)
+        
+        # Update the solution
+        ns_domain.update(uu)
+        
+        with log.timer('  Plot: '):
+            if it % inp.output_step == 0:
+                fig = plot_domains(inp, [ns_domain])
+                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
+        
+        log.info('  Timestep: %4.2fs' % (time.time() - timer_ts_start))
+        
+        # Errors
+        u0a, u1a = ns_domain.form.u_expressions
+        u0 = ns_domain.form.u0
+        u1 = ns_domain.form.u1
+        eu0 = df.errornorm(u0a, u0, degree_rise=0)
+        eu1 = df.errornorm(u1a, u1, degree_rise=0)
+        log.info('  ERRORS: %8.2e %8.2e\n' % (eu0, eu1))

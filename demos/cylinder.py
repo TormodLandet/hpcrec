@@ -48,22 +48,31 @@ from utilities import SimpleLog
 
 
 class Input(object):
-    l1 = 2    # Length before NS domain starts
-    l2 = 4    # Length of NS domain
-    h1 = 1    # Height of pot domain
-    h2 = 1    # Height of NS domain 
-    d = 0.1   # Cylinder diameter
-    f = 3     # Diameters between cylinder center and inlet
+    l1 = 2      # Length before NS domain starts
+    l2 = 4      # Length of NS domain
+    h1 = 1      # Height of pot domain
+    h2 = 1      # Height of NS domain 
+    d = 0.1     # Cylinder diameter
+    f = 3       # Diameters between cylinder center and inlet
+    
+    # Which problem to solve and what type of mesh layout to make
+    problem = 'Cylinder'
     layout = 'I'
     
-    U0 = 0.1  # Speed at inlet
-    rho = 1   # Density
-    Re = 1000 # Reynolds number (determines the viscosity)
+    U0 = 0.01   # Speed at inlet
+    rho = 1     # Density
+    Re = 200    # Reynolds number (determines the viscosity)
     
     dt = 0.01   # Timestep
     tmax = 10.0 # Time duration of the simulation
     tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
     output_step = 10
+    
+    # Finite element discretization
+    Pu = 2
+    Pp = 1
+    use_supg = True
+    pressure_lagrange_multiplier = False
     
     def inlet_vel(self, t):
         fac = 1
@@ -71,21 +80,27 @@ class Input(object):
             fac = 0.5 - 0.5*numpy.cos(numpy.pi*t/self.tramp)
         return self.U0*fac
     
+    @property
+    def mu(self):
+        return self.d*self.U0*self.rho/self.Re
+    
     # Overwritten by command line parameters:
     N1 = N2 = 10            # Geometric discretisation
     coupled_domains = True  # Coupling can be turned off to test the solvers separately
     
 
 def main(inp):
+    # Detect matrix insertions breaking the non-zero pattern
+    import warnings
+    warnings.simplefilter('error', scipy.sparse.SparseEfficiencyWarning)
+    
     log = SimpleLog('cylinder.log')
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
-    C1, C2  = None, None
+    log.info('Péclet: %.2f\n' % (inp.U0*ns_domain.h/(2*inp.mu/inp.rho)))
     
-    import warnings
-    warnings.simplefilter('error', scipy.sparse.SparseEfficiencyWarning)
-    
+    # Time loop
     t = 0
     it = 0
     dt = inp.dt
@@ -103,7 +118,7 @@ def main(inp):
         
         # Setup coupling matrices
         with log.timer('  Couple: '):
-            if C1 is None:
+            if it == 1:
                 # Setup coupling blocks between the two system matrices
                 C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
             
@@ -130,16 +145,9 @@ def main(inp):
             
             else:
                 # Remove coupling
-                C1 *= 0; C2 *= 0
-                for ns_dof, _, _ in ns_u_map:
-                    # Set coupled velocity to inlet velocity 
-                    apply_dirichlet(A1, ns_dof)
-                    vel_dir = ns_domain.vel_dir[ns_dof] 
-                    b1[ns_dof] = inp.inlet_vel(t) if vel_dir == 0 else 0
-                for pf_dof, _, _ in pf_p_map:
-                    # Set coupled potential to a constant value
-                    apply_dirichlet(A2, pf_dof)
-                    b2[pf_dof] = 42
+                if it == 1:
+                    C1 *= 0
+                    C2 *= 0
         
         # Assemble the block matrix
         AA = scipy.sparse.bmat([[A1, C1], [C2, A2]], 'csr')
@@ -158,7 +166,7 @@ def main(inp):
         
         with log.timer('  Plot: '):
             if it % inp.output_step == 0:
-                fig = plot_domains(inp, ns_domain, pf_domain)
+                fig = plot_domains(inp, [ns_domain, pf_domain])
                 fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
                 
                 #from matplotlib import pyplot
@@ -301,7 +309,7 @@ def apply_dirichlet(A, row, diag_value=1):
     A[row,row] = diag_value
 
 
-def plot_domains(inp, ns_domain, pf_domain):
+def plot_domains(inp, domains):
     """
     Plot the combined results in terms of velocity and pressure
     """
@@ -309,29 +317,45 @@ def plot_domains(inp, ns_domain, pf_domain):
     from matplotlib import tri
     
     # Get combined triangulation
-    ns_coords, ns_triangles = ns_domain.get_triangulation()
-    pf_coords, pf_triangles = pf_domain.get_triangulation()
-    Nv_ns, Nv_pf = len(ns_coords), len(pf_coords)
+    comb_coords, comb_triangles = [], []
+    for domain in domains:
+        c, t = domain.get_triangulation()
+        comb_coords.append(c)
+        comb_triangles.append(t)
+    Nc = sum(len(c) for c in comb_coords)
     
-    coords = numpy.zeros((Nv_ns + Nv_pf, 2), float)
-    coords[:Nv_ns] = ns_coords
-    coords[Nv_ns:] = pf_coords
-    
-    triangles = list(ns_triangles)
-    for v0, v1, v2 in pf_triangles:
-        triangles.append((v0+Nv_ns, v1+Nv_ns, v2+Nv_ns))
-    mesh = tri.Triangulation([c[0] for c in coords], [c[1] for c in coords], triangles)
-    
-    # Get combined data
+    # Get coordinates as one long numpy array,
+    # triangles as one long list, and function
+    # values as one long array from all domains
+    coords = numpy.zeros((Nc, 2), float)
+    triangles = []
     func_names = ['u0', 'u1', 'p']
-    values = numpy.zeros((3, len(coords)), float)
-    for i, func_name in enumerate(func_names):
-        values[i,:Nv_ns] = ns_domain.get_data(func_name)
-        values[i,Nv_ns:] = pf_domain.get_data(func_name) 
+    values = numpy.zeros((3, Nc), float)
+    start = 0
+    for domain, c, t in zip(domains, comb_coords, comb_triangles):
+        n = len(c)
+        coords[start:start+n] = c
+        
+        # Renumber triangle vertex numbers
+        for v0, v1, v2 in t:
+            triangles.append((v0+start, v1+start, v2+start))
+        
+        # Get function data
+        for i, func_name in enumerate(func_names): 
+            values[i,start:start+n] = domain.get_data(func_name)
+        
+        start += n
+    
+    # Combined triangulation
+    X = numpy.array([c[0] for c in coords], float)
+    Y = numpy.array([c[1] for c in coords], float)
+    mesh = tri.Triangulation(X, Y, triangles)
     
     # Scaling
     scale_u = inp.U0
     scale_p = inp.U0**2*inp.rho
+    U = values[0]/scale_u
+    V = values[1]/scale_u
     
     # Get color bar limits
     maxabs_u = 2.5
@@ -360,13 +384,19 @@ def plot_domains(inp, ns_domain, pf_domain):
     cmap.set_bad('#acacac')
     params = dict(shading='gouraud', cmap=cmap)
     
+    # Quiver plot setup
+    params_quiver = dict(scale=inp.N2/2, width=1/(inp.N2*4), scale_units='x', units='x')
+    numpy.random.seed(42)
+    I = numpy.random.rand(X.size) < 0.33
+    
     # Plot functions on triangulation
     Cu  = axes[0].tripcolor(mesh, values[0]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
     _   = axes[1].tripcolor(mesh, values[1]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
-    Cp  = axes[2].tripcolor(mesh, values[2]/scale_p, vmin=-maxabs_p, vmax=maxabs_p, **params)
+    _   = axes[2].quiver(X[I], Y[I], U[I], V[I], **params_quiver)
+    Cp  = axes[3].tripcolor(mesh, values[2]/scale_p, vmin=-maxabs_p, vmax=maxabs_p, **params)
     
     # Plot triangulation mesh lightly above the functions
-    for ax in axes[:3]:
+    for ax in axes[2:3]:
         ax.triplot(mesh, c='#cccccc', lw=0.2)
     
     # Colorbars

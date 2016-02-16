@@ -140,7 +140,8 @@ class PotentialFlowDomain(object):
             if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
                 x, y = coord
                 if x > -1e-8:
-                    pass # This dof is coupled to N-S.
+                    # This dof is coupled to N-S - this BC will be overwritten
+                    bcs.append(('D', dof, 42))
                 elif x < -inp.l1 + 1e-8:
                     bcs.append(('Nx', dof, U0))
                     inlet_dofs.append(dof)
