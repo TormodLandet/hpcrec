@@ -44,35 +44,37 @@ import scipy.sparse.linalg
 import hpc
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
-from utilities import SimpleLog
+from utilities import SimpleLog, StreamFunction
 
 
 class Input(object):
-    l1 = 2      # Length before NS domain starts
-    l2 = 4      # Length of NS domain
-    h1 = 1      # Height of pot domain
-    h2 = 1      # Height of NS domain 
-    d = 0.1     # Cylinder diameter
-    f = 3       # Diameters between cylinder center and inlet
+    l1 = 1        # Length before NS domain starts
+    l2 = 4        # Length of NS domain
+    h1 = 1        # Height of pot domain
+    h2 = 1        # Height of NS domain 
+    d = 0.1       # Cylinder diameter
+    f = 2         # Diameters between cylinder center and inlet 
+    N1 = N2 = 10  # Geometric discretisation
     
     # Which problem to solve and what type of mesh layout to make
     problem = 'Cylinder'
     layout = 'I'
+    coupled_domains = True
     
-    U0 = 0.01   # Speed at inlet
+    U0 = 0.1    # Speed at inlet
     rho = 1     # Density
-    Re = 200    # Reynolds number (determines the viscosity)
+    Re = 100    # Reynolds number (determines the viscosity)
     
     dt = 0.01   # Timestep
     tmax = 10.0 # Time duration of the simulation
     tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
-    output_step = 10
+    output_step = 1e100
     
     # Finite element discretization
     Pu = 2
     Pp = 1
-    use_supg = True
     pressure_lagrange_multiplier = False
+    use_supg = True
     
     def inlet_vel(self, t):
         fac = 1
@@ -83,11 +85,7 @@ class Input(object):
     @property
     def mu(self):
         return self.d*self.U0*self.rho/self.Re
-    
-    # Overwritten by command line parameters:
-    N1 = N2 = 10            # Geometric discretisation
-    coupled_domains = True  # Coupling can be turned off to test the solvers separately
-    
+
 
 def main(inp):
     # Detect matrix insertions breaking the non-zero pattern
@@ -105,11 +103,13 @@ def main(inp):
     it = 0
     dt = inp.dt
     rho = inp.rho
+    timer_loop_start = time.time()
+    stream_function = StreamFunction(ns_domain.u)
     while t <= inp.tmax + 1e-6 - dt:
         t += dt
         it += 1
         timer_ts_start = time.time()
-        log.info('Timestep %8.4f' % t)
+        log.info('Timestep %5d  t: %8.4f' % (it, t))
         
         # Assemble the two system matrices
         with log.timer('  Assemble: '):
@@ -166,8 +166,8 @@ def main(inp):
         
         with log.timer('  Plot: '):
             if it % inp.output_step == 0:
-                fig = plot_domains(inp, [ns_domain, pf_domain])
-                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
+                fig = plot_domains(inp, [ns_domain, pf_domain], t, stream_function)
+                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, round(t*1e4)), dpi=100)
                 
                 #from matplotlib import pyplot
                 #pyplot.figure()
@@ -203,6 +203,8 @@ def main(inp):
                         pf_dof, phi, (phi-phi2)/phi, dphidx, dphidy, p1, p2, p),
                 print ' - % 8.2e % 8.2e' % (p_ns, (p_ns-p)/p_ns)
         # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
+    
+    log.info('DONE in %.2fs\n' % (time.time() - timer_loop_start))
 
 
 def get_domain_coupling(ns_domain, pf_domain, geps=1e-8):
@@ -309,7 +311,7 @@ def apply_dirichlet(A, row, diag_value=1):
     A[row,row] = diag_value
 
 
-def plot_domains(inp, domains):
+def plot_domains(inp, domains, simulation_time, stream_function=None, quiver=False):
     """
     Plot the combined results in terms of velocity and pressure
     """
@@ -369,13 +371,13 @@ def plot_domains(inp, domains):
     else:
         fig = pyplot.figure(figsize=(12, 9))
         axes = [None]*6
-        axes[0] = fig.add_axes([0.02, 0.75, 0.80, 0.25])
-        axes[1] = fig.add_axes([0.02, 0.50, 0.80, 0.25])
-        axes[2] = fig.add_axes([0.02, 0.25, 0.80, 0.25])
-        axes[3] = fig.add_axes([0.02, 0.00, 0.80, 0.25])
+        axes[0] = fig.add_axes([0.04, 0.75, 0.80, 0.25])
+        axes[1] = fig.add_axes([0.04, 0.50, 0.80, 0.25])
+        axes[2] = fig.add_axes([0.04, 0.25, 0.80, 0.25])
+        axes[3] = fig.add_axes([0.04, 0.00, 0.80, 0.25])
         # Colorbar axes
-        axes[4] = fig.add_axes([0.85, 0.55, 0.05, 0.35])
-        axes[5] = fig.add_axes([0.85, 0.10, 0.05, 0.35])
+        axes[4] = fig.add_axes([0.88, 0.55, 0.05, 0.35])
+        axes[5] = fig.add_axes([0.88, 0.10, 0.05, 0.35])
         
     # Setup color map to be blue via white to red with out of range colors cyan and pink
     cmap = pyplot.cm.get_cmap('RdBu_r')
@@ -384,20 +386,30 @@ def plot_domains(inp, domains):
     cmap.set_bad('#acacac')
     params = dict(shading='gouraud', cmap=cmap)
     
-    # Quiver plot setup
-    params_quiver = dict(scale=inp.N2/2, width=1/(inp.N2*4), scale_units='x', units='x')
-    numpy.random.seed(42)
-    I = numpy.random.rand(X.size) < 0.33
-    
     # Plot functions on triangulation
     Cu  = axes[0].tripcolor(mesh, values[0]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
     _   = axes[1].tripcolor(mesh, values[1]/scale_u, vmin=-maxabs_u, vmax=maxabs_u, **params)
-    _   = axes[2].quiver(X[I], Y[I], U[I], V[I], **params_quiver)
     Cp  = axes[3].tripcolor(mesh, values[2]/scale_p, vmin=-maxabs_p, vmax=maxabs_p, **params)
+    
+    # Stream function
+    if stream_function:
+        stream_function.compute()
+        stream_function.plot(axes[2])
+    
+    # Quiver plot
+    if quiver:
+        params_quiver = dict(scale=inp.N2/2,
+                             width=1/(inp.N2*4),
+                             scale_units='x',
+                             units='x')
+        rs = numpy.random.RandomState()
+        rs.seed(42)
+        I = rs.rand(X.size) < 0.33
+        axes[2].quiver(X[I], Y[I], U[I], V[I], **params_quiver)
     
     # Plot triangulation mesh lightly above the functions
     for ax in axes[2:3]:
-        ax.triplot(mesh, c='#cccccc', lw=0.2)
+        ax.triplot(mesh, c='#999999', lw=0.2)
     
     # Colorbars
     fig.colorbar(Cu, cax=axes[4])
@@ -405,7 +417,19 @@ def plot_domains(inp, domains):
     
     for ax in axes[:4]:
         ax.axis('off')
-        #ax.plot([0, 0], [-inp.h2/2, inp.h2/2], ':k')
+    
+    # Some informative text
+    ax = axes[5]
+    tp = dict(transform=fig.transFigure, family='monospace')
+    text_propsR = dict(horizontalalignment='right', verticalalignment='bottom', **tp)
+    text_propsC = dict(horizontalalignment='center', verticalalignment='center', **tp)
+    ax.text(0.99, 0.04, 't=%5.2f' % simulation_time, **text_propsR)
+    ax.text(0.99, 0.01, 'Re=%4g' % inp.Re, **text_propsR)
+    ax.text(0.02, 0.875, 'u', **text_propsC)
+    ax.text(0.02, 0.625, 'v', **text_propsC)
+    ax.text(0.02, 0.125, 'p', **text_propsC)
+    ax.text(0.905, 0.92, 'u, v', **text_propsC)
+    ax.text(0.905, 0.47, 'p', **text_propsC)
     
     inp._plot_domains_save = fig, axes
     return fig
@@ -414,15 +438,23 @@ def plot_domains(inp, domains):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('-N', type=int, default=10,
+    parser.add_argument('-N', type=int, default=Input.N1,
                         help='number of elements over the height')
-    parser.add_argument('-p', '--plot', action='store_true')
+    parser.add_argument('--tmax', type=float, default=Input.tmax,
+                        help='simulation time')
+    parser.add_argument('--dt', type=float, default=Input.dt,
+                        help='simulation time step')
+    parser.add_argument('-s', '--output-step', type=int, default=Input.output_step,
+                        help='timesteps between each generated plot')
+    parser.add_argument('--no-supg', action='store_true')
     parser.add_argument('-u', '--uncoupled', action='store_true')
     args = parser.parse_args()
     
     inp = Input()
     inp.N1 = inp.N2 = args.N
+    inp.tmax = args.tmax
+    inp.dt = args.dt
     inp.coupled_domains = not args.uncoupled
-    if not args.plot:
-        inp.output_step = 1e100 
+    inp.use_supg = not args.no_supg
+    inp.output_step = args.output_step 
     main(inp)

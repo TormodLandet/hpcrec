@@ -13,9 +13,11 @@ class NavierStokesDomain(object):
         
         if inp.layout == 'I':
             self.num_dividing_lines = 1
-        
+            
+        df.set_log_level(df.WARNING)
         self.form = NavierStokesWeakForm(inp)
         self.h = self.form.mesh.hmin()
+        self.u = df.as_vector([self.form.u0, self.form.u1])
         
     def get_dividing_line(self, line_number):
         """
@@ -262,10 +264,7 @@ class NavierStokesWeakForm(object):
         zero = df.Constant(0)
         
         if self.input.problem == 'Cylinder':
-            self.dirichlet_bcs = [# Inlet BCs (will be overwritten by coupling)
-                                  df.DirichletBC(W.sub(0), self.U0, marker, 2),
-                                  df.DirichletBC(W.sub(1), zero, marker, 2),
-                                  # Outlet BCs
+            self.dirichlet_bcs = [# Outlet BCs
                                   #df.DirichletBC(W.sub(0), uout, marker, 2),
                                   #df.DirichletBC(W.sub(1), zero, marker, 2),
                                   # Bottom BCs
@@ -277,6 +276,12 @@ class NavierStokesWeakForm(object):
                                   # Cylinder BCs
                                   df.DirichletBC(W.sub(0), zero, marker, 5),
                                   df.DirichletBC(W.sub(1), zero, marker, 5)]
+            
+            if not self.input.coupled_domains:
+                # Inlet BCs
+                self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), self.U0, marker, 4))
+                self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 4))
+            
             self.pressure_ds_boundaries = [1, 3, 4, 5]
             self.pressure_outlet_boundaries = [2]
             self.velocity_ds_boundaries = [1, 2, 3, 4, 5]
@@ -327,39 +332,26 @@ class NavierStokesWeakForm(object):
             eq = 0
         
         # The weak form of the momentum equation and the divergence free criterion
-        for d in range(2):
-            # Divergence free criterion
-            # ∇⋅u = 0
-            eq += u[d].dx(d)*q*dx
-            
-            # Time derivative
-            # ∂u/∂t
-            eq += rho*(u[d] - up[d])/dt*v[d]*dx
-                        
-            # Convection
-            # ∇⋅(ρ u ⊗ u_conv)
-            #eq += div(rho*u[d]*u_conv)*v[d]*dx
-            eq += rho*dot(u_conv, grad(u[d]))*v[d]*dx
-            
-            # Diffusion
-            # -∇⋅μ(∇u)
-            eq += mu*dot(grad(u[d]), grad(v[d]))*dx
-            
-            # Pressure
-            # ∇p
-            eq -= v[d].dx(d)*p*dx
-            
-            # Body force (gravity)
-            # ρ g
-            eq -= rho*g[d]*v[d]*dx
+        # ∇⋅u = 0
+        eq += div(u)*q*dx
+        # ∂u/∂t
+        eq += rho*dot(u - up, v)/dt*dx
+        # ∇⋅(ρ u ⊗ u_conv)
+        #eq += div(rho*u[d]*u_conv)*v[d]*dx
+        eq += rho*dot(dot(grad(u), u_conv), v)*dx
+        # -∇⋅μ(∇u)
+        eq += mu*df.inner(grad(u), grad(v))*dx
+        # ∇p
+        eq -= div(v)*p*dx
+        # ρ g
+        eq -= rho*dot(g, v)*dx
         
         # Velocity boundary integrals, from integration by parts
         for region in self.velocity_ds_boundaries:
             # Convection
             #eq += rho*dot(u_conv, n)*dot(u, v)*ds(region)
             # Diffusion
-            for d in range(2):
-                eq -= mu*dot(grad(u[d]), n)*v[d]*ds(region)
+            eq -= mu*dot(dot(grad(u), n), v)*ds(region)
         
         # Pressure boundary integral, from integration by parts
         for region in self.pressure_ds_boundaries:
@@ -467,8 +459,8 @@ if __name__ == '__main__':
         
         with log.timer('  Plot: '):
             if it % inp.output_step == 0:
-                fig = plot_domains(inp, [ns_domain])
-                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, t*1e4), dpi=100)
+                fig = plot_domains(inp, [ns_domain], t)
+                fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, round(t*1e4)), dpi=100)
         
         log.info('  Timestep: %4.2fs' % (time.time() - timer_ts_start))
         
