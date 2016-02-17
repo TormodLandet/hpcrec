@@ -6,4 +6,6 @@ README.html
 *.msh
 *.xml
 *.out
+*.log
 *.png
+*.mp4

@@ -87,11 +87,10 @@ class PotentialFlowDomain(object):
         if self._bc_cache is None:
             bcs, inlet_dofs = self._get_boundary_conditions(t)
             hpc.apply_bcs(self.domain, A, b, bcs)
-            self._bc_cache = (U0, inlet_dofs)
-        Uprev, inlet_dofs = self._bc_cache
-        if U0 != Uprev:
-            for dof in inlet_dofs:
-                b[dof] = U0
+            self._bc_cache = numpy.array(inlet_dofs, int)
+        else:
+            inlet_dofs = self._bc_cache
+            b[inlet_dofs] = U0
         
         return A, b
     

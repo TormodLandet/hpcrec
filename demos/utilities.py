@@ -151,7 +151,7 @@ class StreamFunction(object):
     
         return self.psi
     
-    def plot(self, mpl_ax, levels=20):
+    def plot(self, mpl_ax, levels=50):
         """
         Plot the function on a matplotlib axes. Call .compute() first
         to calculate the stream function

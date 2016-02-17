@@ -113,6 +113,14 @@ class NavierStokesDomain(object):
         """
         func = getattr(self.form, func_name)
         return func.compute_vertex_values()
+    
+    def get_force(self):
+        """
+        Get the force on the cylinder
+        """
+        visc_force = [0, 0] # ignore these for now
+        pres_force = self.form.pressure_force(5)
+        return visc_force, pres_force
 
 
 class NavierStokesWeakForm(object):
@@ -151,6 +159,16 @@ class NavierStokesWeakForm(object):
         A, b = df.assemble_system(a, L, self.dirichlet_bcs,
                                   A_tensor=A, b_tensor=b)
         return A, b
+    
+    def pressure_force(self, region):
+        """
+        Integrate the pressure force on the given region
+        """
+        ds = self.ds(region)
+        n = df.FacetNormal(self.mesh)
+        Fx = df.assemble(self.p*n[0]*ds)
+        Fy = df.assemble(self.p*n[1]*ds)
+        return [Fx, Fy]
     
     def _create_mesh(self):
         # Geometry

@@ -53,7 +53,7 @@ class Input(object):
     h1 = 1        # Height of pot domain
     h2 = 1        # Height of NS domain 
     d = 0.1       # Cylinder diameter
-    f = 2         # Diameters between cylinder center and inlet 
+    f = 1.5       # Diameters between cylinder center and inlet 
     N1 = N2 = 10  # Geometric discretisation
     
     # Which problem to solve and what type of mesh layout to make
@@ -66,7 +66,7 @@ class Input(object):
     Re = 100    # Reynolds number (determines the viscosity)
     
     dt = 0.01   # Timestep
-    tmax = 10.0 # Time duration of the simulation
+    tmax = 100  # Time duration of the simulation
     tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
     output_step = 1e100
     
@@ -174,9 +174,12 @@ def main(inp):
                 #pyplot.spy(AA.todense())
                 #pyplot.show()
         
-        log.info('  Timestep: %4.2fs\n' % (time.time() - timer_ts_start))
+        log.info('  Timestep: %4.2fs' % (time.time() - timer_ts_start))
         if it == 1 and inp.N1 < 7:
             log.info('Cond: %8.2e\n' % numpy.linalg.cond(AA.todense()))
+            
+        Fv, Fp = ns_domain.get_force()
+        log.info('  Fp: % .3e % .3e  Fv: % .3e % .3e\n' % (Fp[0], Fp[1], Fv[0], Fv[1]))
         
         # DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG DEBUG
         if False:
