@@ -2,12 +2,13 @@
 from __future__ import division
 import time
 import numpy
+from matplotlib import pyplot
 import dolfin as df
 from dolfin import div, grad, dot
-from cylinder import Input, plot_domains
+from cylinder import Input
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
-from utilities import SimpleLog, StreamFunction
+from utilities import SimpleLog, StreamFunction, SolutionProperties
 
 
 def main(inp):
@@ -52,13 +53,15 @@ def main(inp):
     coords = coords[:len(coord_map)]
     
     domain = FemFemDomain(inp, coords, triangles, len(comb_triangles[0]))
+    uC, _uP = domain.calculate_combined_functions()
+    stream_function = StreamFunction(uC)
+    solprops = SolutionProperties(domain.u, dt=inp.dt, nu=inp.mu/inp.rho, dx=domain.dx_ns)
     
     # Time loop
     t = 0
     it = 0
     dt = inp.dt
     timer_loop_start = time.time()
-    stream_function = StreamFunction(ns_domain.u)
     while t <= inp.tmax + 1e-6 - dt:
         t += dt
         it += 1
@@ -75,13 +78,19 @@ def main(inp):
         
         with log.timer('  Plot: '):
             if it % inp.output_step == 0:
-                fig = plot_domains(inp, [ns_domain, pf_domain], t, stream_function)
+                fig = plot_domain(inp, domain, t, stream_function)
                 fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, round(t*1e4)), dpi=100)
         
         log.info('  Timestep: %4.2fs' % (time.time() - timer_ts_start))
             
-        Fv, Fp = ns_domain.get_force()
-        log.info('  Fp: % .3e % .3e  Fv: % .3e % .3e\n' % (Fp[0], Fp[1], Fv[0], Fv[1]))
+        Fv, Fp = domain.get_force()
+        log.info('  Fp: % .3e % .3e  Fv: % .3e % .3e' % (Fp[0], Fp[1], Fv[0], Fv[1]))
+        
+        # Calculate the Courant and Peclet numbers
+        Co_max = solprops.courant_number().vector().max()
+        Pe_max = solprops.peclet_number().vector().max()
+        log.info('  Co: %6.1e  Pe: %6.1e\n' % (Co_max, Pe_max))
+        
         
     log.info('DONE in %.2fs\n' % (time.time() - timer_loop_start))
     
@@ -100,8 +109,9 @@ class FemFemDomain(object):
         self._create_functions()
         self._create_boundary_conditions()
         self._create_weak_form()
+        self._create_combined_functions()
         self.solver = df.PETScLUSolver()
-        
+    
     def assemble(self, t):
         """
         Assemble matrices
@@ -115,38 +125,54 @@ class FemFemDomain(object):
         
         a, L = self._weak_form
         A, b = df.assemble_system(a, L, self.dirichlet_bcs)
+        A.ident_zeros()
         return A, b
 
     def solve(self, A, b):
         w = self.func
-        self.solver.solve(A, self.func.vector(), b)
+        self.solver.solve(A, w.vector(), b)
         
         # Spread to the component vectors
-        self.form.assigner.assign(self.functions, w)
-        for func in self.form.functions:
+        self.phi_p.assign(self.phi)
+        self.assigner.assign(self.functions, w)
+        for func in self.functions:
             func.vector().apply('insert') # dolfin bug #587
     
-    def pressure_force(self, region=5):
+    def get_force(self, region=5):
         """
-        Integrate the pressure force on the given region
+        Integrate the pressure and viscous forces on the given region
         """
         ds = self.ds(region)
         n = df.FacetNormal(self.mesh)
-        Fx = df.assemble(self.p*n[0]*ds)
-        Fy = df.assemble(self.p*n[1]*ds)
-        return [Fx, Fy]
+        
+        # Viscosity, μ(∇u)
+        sigma_n = dot(grad(self.u), n)
+        Fvx = df.assemble(sigma_n[0]*ds)
+        Fvy = df.assemble(sigma_n[1]*ds)
+        
+        # Pressure, p
+        Fpx = df.assemble(self.p*n[0]*ds)
+        Fpy = df.assemble(self.p*n[1]*ds)
+        
+        return [Fvx, Fvy], [Fpx, Fpy]
     
-    def viscous_force(self, region=5):
+    def calculate_combined_functions(self):
         """
-        Integrate the viscous force on the given region
+        Project the two domain solutions into one single solution for the whole domain
         """
-        ds = self.ds(region)
-        n = df.FacetNormal(self.mesh)
-        u = df.as_vector([self.u0, self.u1])
-        sigma_n = dot(grad(u), n)
-        Fx = df.assemble(sigma_n[0]*ds)
-        Fy = df.assemble(sigma_n[1]*ds)
-        return [Fx, Fy]
+        # Combined velocity
+        uC, A, L0, L1 = self._uC
+        b0 = df.assemble(L0)
+        b1 = df.assemble(L1)
+        df.solve(A, uC[0].vector(), b0)
+        df.solve(A, uC[1].vector(), b1)
+        
+        # Combined pressure
+        uP, A, L = self._pC
+        b = df.assemble(L)
+        df.solve(A, uP.vector(), b)
+
+        return uC, uP
     
     def _create_mesh(self, coords, triangles, Nc_ns):
         """
@@ -200,13 +226,13 @@ class FemFemDomain(object):
         self.mesh = mesh
         self.cell_marker = cell_marker
         self.facet_marker = facet_marker
-        self.mesh_ns = df.SubMesh(mesh, cell_marker, 1)
-        self.mesh_pf = df.SubMesh(mesh, cell_marker, 2)
+        
         self.dx = df.Measure('dx')(subdomain_data=cell_marker)
-        self.ds = df.Measure('ds')(subdomain_data=facet_marker)
         self.dx_ns = self.dx(1)
         self.dx_pf = self.dx(2)
-        
+        self.ds = df.Measure('ds')(subdomain_data=facet_marker)
+        self.dS = df.Measure('dS')(subdomain_data=facet_marker)
+                
         if False:
             # Plot the merged mesh
             df.plot(mesh)
@@ -221,21 +247,23 @@ class FemFemDomain(object):
         e_u = df.FiniteElement('CG', cell, self.input.Pu)
         e_p = df.FiniteElement('CG', cell, self.input.Pp)
         e_r = df.FiniteElement('CG', cell, self.input.Pu)
-        V = df.FunctionSpace(self.mesh_ns, e_u)
-        Q = df.FunctionSpace(self.mesh_ns, e_p)
-        R = df.FunctionSpace(self.mesh_pf, e_r)
+        V = df.FunctionSpace(self.mesh, e_u)
+        Q = df.FunctionSpace(self.mesh, e_p)
+        R = df.FunctionSpace(self.mesh, e_r)
         
         # Functions
         self.u0 = df.Function(V)
         self.u1 = df.Function(V)
+        self.u = df.as_vector([self.u0, self.u1])
         self.u_conv0 = df.Function(V)
         self.u_conv1 = df.Function(V)
         self.p = df.Function(Q)
         self.phi = df.Function(R)
+        self.phi_p = df.Function(R)
         
         if self.use_lagrange_multiplicator:
             e_l = df.FiniteElement('R', cell, 0)
-            L = df.FunctionSpace(self.mesh_ns, e_l)
+            L = df.FunctionSpace(self.mesh, e_l)
             self.l = df.Function(L)
             
             elements = [e_u, e_u, e_p, e_r, e_l]
@@ -251,7 +279,7 @@ class FemFemDomain(object):
         W = df.FunctionSpace(self.mesh, e_mixed)
         self.funcspace = W
         self.func = df.Function(W)
-        #self.assigner = df.FunctionAssigner(func_spaces, W)
+        self.assigner = df.FunctionAssigner(func_spaces, W)
     
     def _create_boundary_conditions(self):        
         # "Constants" that are changed every time step before assembly
@@ -302,7 +330,7 @@ class FemFemDomain(object):
         phi = uc[3]
         r = vc[3]
         
-        up = df.as_vector([self.u0, self.u1])
+        up = self.u
         u_conv = df.as_vector([self.u_conv0, self.u_conv1])
         
         inp = self.input
@@ -352,17 +380,20 @@ class FemFemDomain(object):
         for region in self.pressure_ds_boundaries:
             eq += p*dot(n, v)*ds(region)
         
-        # Coupling
+        # Coupling 
+        NS, PF = '-', '+' # PF is plus since marker 2 > marker 1
         for region in self.coupled_boundaries:
             # Convection
-            eq += rho*dot(u_conv, n)*dot(grad(phi), v)*ds(region)
+            coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(grad(phi(PF)), v(NS))
             # Diffusion
-            eq -= mu*dot(dot(grad(grad(phi)), n), v)*ds(region)
+            coupling -= mu(NS)*dot(dot(grad(grad(phi(PF))), n(NS)), v(NS))
             # Pressure
-            p_c = - rho/dt(phi - self.phi) - rho/2*dot(u_conv, u_conv)
-            eq += p_c*dot(n, v)*ds(region)
+            p_pf = - rho(NS)/dt(NS)*(phi(PF) - self.phi(PF)) - rho(NS)/2*dot(u_conv(NS), u_conv(NS))
+            coupling += p_pf*dot(n(NS), v(NS))
             # Potential
-            eq -= dot(u, n)*r*ds(region)
+            coupling -= dot(u(NS), n(PF))*r(PF)
+            
+            eq += coupling*self.dS(region)
         
         # Pressure boundary integral from outlet boundary condition
         # μ ∂u_n/∂n - p = F_n = 0
@@ -408,6 +439,104 @@ class FemFemDomain(object):
         
         # Store the weak form for assembly
         self._weak_form = df.system(eq)
+        
+    def _create_combined_functions(self):
+        """
+        Define projections into global velocity and pressure functions
+        """
+        # Combined velocity, uC
+        V = self.u0.function_space()
+        u, v = df.TrialFunction(V), df.TestFunction(V)
+        a = u*v*df.dx
+        L0 = self.u0*v*self.dx_ns + self.phi.dx(0)*v*self.dx_pf
+        L1 = self.u1*v*self.dx_ns + self.phi.dx(1)*v*self.dx_pf
+        A = df.assemble(a)
+        uC = df.as_vector([df.Function(V), df.Function(V)])
+        self._uC = (uC, A, L0, L1)
+        
+        # Combined pressure, pC
+        rho, dt = self.input.rho, self.input.dt
+        V = self.p.function_space()
+        u, v = df.TrialFunction(V), df.TestFunction(V)
+        a = u*v*df.dx
+        L = self.p*v*self.dx_ns
+        p_pf = - rho/dt*(self.phi - self.phi_p) - rho/2*dot(uC, uC)
+        L += p_pf*v*self.dx_pf
+        A = df.assemble(a)
+        pC = df.Function(V)
+        self._pC = (pC, A, L)
+
+
+def plot_domain(inp, domain, simulation_time, stream_function=None, quiver=False):
+    """
+    Plot the combined velocity and pressure fields at the current time step
+    """
+    # Get figure and axes
+    if hasattr(inp, '_plot_domains_save'):
+        fig, axes = inp._plot_domains_save
+        for ax in axes:
+            ax.clear()
+    else:
+        fig = pyplot.figure(figsize=(12, 9))
+        axes = [None]*6
+        axes[0] = fig.add_axes([0.04, 0.75, 0.80, 0.25])
+        axes[1] = fig.add_axes([0.04, 0.50, 0.80, 0.25])
+        axes[2] = fig.add_axes([0.04, 0.25, 0.80, 0.25])
+        axes[3] = fig.add_axes([0.04, 0.00, 0.80, 0.25])
+        # Colorbar axes
+        axes[4] = fig.add_axes([0.88, 0.55, 0.05, 0.35])
+        axes[5] = fig.add_axes([0.88, 0.10, 0.05, 0.35])
+        
+    # Setup color map to be blue via white to red with out of range colors cyan and pink
+    cmap = pyplot.cm.get_cmap('RdBu_r')
+    cmap.set_over('#ff7ee6')
+    cmap.set_under('#25f4ff')
+    cmap.set_bad('#acacac')
+    
+    # Plot functions
+    uC, pC = domain.calculate_combined_functions()
+    pyplot.sca(axes[0]); Cu = df.plot(uC[0], backend='matplotlib', shading='gouraud')
+    pyplot.sca(axes[1]); __ = df.plot(uC[1], backend='matplotlib', shading='gouraud')
+    pyplot.sca(axes[3]); Cp = df.plot(pC, backend='matplotlib', shading='gouraud')
+    
+    # Stream function
+    if stream_function:
+        stream_function.compute()
+        stream_function.plot(axes[2])
+    
+    # Quiver plot
+    if quiver:
+        pyplot.sca(axes[2])
+        df.plot(uC, backend='matplotlib')
+    
+    # Plot triangulation mesh lightly above the functions
+    mesh = uC[0].function_space().mesh()
+    for ax in axes[2:3]:
+        pyplot.sca(ax)
+        df.plot(mesh, backend='matplotlib', c='#999999', lw=0.2)
+    
+    # Colorbars
+    fig.colorbar(Cu, cax=axes[4])
+    fig.colorbar(Cp, cax=axes[5])
+    
+    for ax in axes[:4]:
+        ax.axis('off')
+    
+    # Some informative text
+    ax = axes[5]
+    tp = dict(transform=fig.transFigure, family='monospace')
+    text_propsR = dict(horizontalalignment='right', verticalalignment='bottom', **tp)
+    text_propsC = dict(horizontalalignment='center', verticalalignment='center', **tp)
+    ax.text(0.99, 0.04, 't=%5.2f' % simulation_time, **text_propsR)
+    ax.text(0.99, 0.01, 'Re=%4g' % inp.Re, **text_propsR)
+    ax.text(0.02, 0.875, 'u', **text_propsC)
+    ax.text(0.02, 0.625, 'v', **text_propsC)
+    ax.text(0.02, 0.125, 'p', **text_propsC)
+    ax.text(0.905, 0.92, 'u, v', **text_propsC)
+    ax.text(0.905, 0.47, 'p', **text_propsC)
+    
+    inp._plot_domains_save = fig, axes
+    return fig
 
 
 if __name__ == '__main__':

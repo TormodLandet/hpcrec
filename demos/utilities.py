@@ -168,3 +168,66 @@ class StreamFunction(object):
         Z = self.psi.compute_vertex_values()
         mpl_ax.tricontour(self._triangulation, Z, levels, colors='#0000AA',
                           linewidths=0.3, linestyles='solid')
+
+
+class SolutionProperties(object):
+    def __init__(self, u, dt, nu, dx=None):
+        """
+        Calculate Courant and Peclet numbers
+        """
+        self.dx = dx or df.dx
+        if dt != 0:
+            self._setup_courant(u, dt)
+        if nu != 0:
+            self._setup_peclet(u, nu)
+    
+    def _setup_courant(self, vel, dt):
+        """
+        Co = a*dt/h where a = mag(vel)
+        """
+        dx = self.dx
+        mesh = vel[0].function_space().mesh()
+        
+        V = df.FunctionSpace(mesh, 'DG', 0)
+        h = df.CellSize(mesh)
+        u, v = df.TrialFunction(V), df.TestFunction(V)
+        a = u*v*dx
+        vmag = df.sqrt(df.dot(vel, vel))
+        L = vmag*dt/h*v*dx
+        
+        # Pre-factorize matrices and store for usage in projection
+        self._courant_solver = df.LocalSolver(a, L)
+        self._courant_solver.factorize()
+        self._courant = df.Function(V)
+    
+    def _setup_peclet(self, vel, nu):
+        """
+        Pe = a*h/(2*nu) where a = mag(vel)
+        """
+        dx = self.dx
+        mesh = vel[0].function_space().mesh()
+        
+        V = df.FunctionSpace(mesh, 'DG', 0)
+        h = df.CellSize(mesh)
+        u, v = df.TrialFunction(V), df.TestFunction(V)
+        a = u*v*dx
+        L = df.dot(vel, vel)**0.5*h/(2*nu)*v*dx
+        
+        # Pre-factorize matrices and store for usage in projection
+        self._peclet_solver = df.LocalSolver(a, L)
+        self._peclet_solver.factorize()
+        self._peclet = df.Function(V)
+    
+    def courant_number(self):
+        """
+        Calculate the Courant numbers in each cell
+        """
+        self._courant_solver.solve_local_rhs(self._courant)
+        return self._courant
+    
+    def peclet_number(self):
+        """
+        Calculate the Peclet numbers in each cell
+        """
+        self._peclet_solver.solve_local_rhs(self._peclet)
+        return self._peclet
