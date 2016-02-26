@@ -295,7 +295,7 @@ class NavierStokesWeakForm(object):
                                   df.DirichletBC(W.sub(0), zero, marker, 5),
                                   df.DirichletBC(W.sub(1), zero, marker, 5)]
             
-            if not self.input.coupled_domains:
+            if self.input.coupling_method == 'uncoupled':
                 # Inlet BCs
                 self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), self.U0, marker, 4))
                 self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 4))

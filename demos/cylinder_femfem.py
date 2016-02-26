@@ -104,6 +104,7 @@ class FemFemDomain(object):
         self.input = inp
         self.use_lagrange_multiplicator = inp.pressure_lagrange_multiplier
         self.use_supg = inp.use_supg
+        self.coupling_method = inp.coupling_method
         
         self._create_mesh(coords, triangles, Nc_ns)
         self._create_functions()
@@ -246,7 +247,7 @@ class FemFemDomain(object):
         cell = self.mesh.ufl_cell()
         e_u = df.FiniteElement('CG', cell, self.input.Pu)
         e_p = df.FiniteElement('CG', cell, self.input.Pp)
-        e_r = df.FiniteElement('CG', cell, self.input.Pu)
+        e_r = df.FiniteElement('CG', cell, self.input.Pu+1)
         V = df.FunctionSpace(self.mesh, e_u)
         Q = df.FunctionSpace(self.mesh, e_p)
         R = df.FunctionSpace(self.mesh, e_r)
@@ -311,7 +312,7 @@ class FemFemDomain(object):
         self.potential_ds_boundaries = [6, 8]
         self.potential_inflow_boundaries = [7]
         
-        if not self.input.coupled_domains:
+        if self.input.coupling_method == 'uncoupled':
             # NS inlet BCs
             self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), self.U0, marker, 4))
             self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 4))
@@ -380,21 +381,6 @@ class FemFemDomain(object):
         for region in self.pressure_ds_boundaries:
             eq += p*dot(n, v)*ds(region)
         
-        # Coupling 
-        NS, PF = '-', '+' # PF is plus since marker 2 > marker 1
-        for region in self.coupled_boundaries:
-            # Convection
-            coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(grad(phi(PF)), v(NS))
-            # Diffusion
-            coupling -= mu(NS)*dot(dot(grad(grad(phi(PF))), n(NS)), v(NS))
-            # Pressure
-            p_pf = - rho(NS)/dt(NS)*(phi(PF) - self.phi(PF)) - rho(NS)/2*dot(u_conv(NS), u_conv(NS))
-            coupling += p_pf*dot(n(NS), v(NS))
-            # Potential
-            coupling -= dot(u(NS), n(PF))*r(PF)
-            
-            eq += coupling*self.dS(region)
-        
         # Pressure boundary integral from outlet boundary condition
         # μ ∂u_n/∂n - p = F_n = 0
         for region in self.pressure_outlet_boundaries:
@@ -409,7 +395,69 @@ class FemFemDomain(object):
         for region in self.potential_inflow_boundaries:
             eq -= self.U0*r*ds(region)
         
-        # The residual of the momentum equation
+        # Domain coupling 
+        NS, PF = '-', '+' # PF is plus since marker 2 > marker 1
+        if self.coupling_method == 'neumann':
+            # Replace all natural boundary conditions (Neumann in this case)
+            # with the value from the opposite domain
+            for region in self.coupled_boundaries:
+                # Convection
+                coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(grad(phi(PF)), v(NS))
+                # Diffusion
+                coupling -= mu(NS)*dot(dot(grad(grad(phi(PF))), n(NS)), v(NS))
+                # Pressure
+                p_pf = - rho(NS)/dt(NS)*(phi(PF) - self.phi(PF)) - rho(NS)/2*dot(u_conv(NS), u_conv(NS))
+                coupling += p_pf*dot(n(NS), v(NS))
+                # Potential
+                coupling -= dot(u(NS), n(PF))*r(PF)
+                # Add the coupling terms to the equation system
+                eq += coupling*self.dS(region)
+        
+        elif self.coupling_method == 'dirichlet':
+            # Set the values at the coupled boundaries to the value in the opposite
+            # domain by weak Dirichlet boundary conditions (Nitsche's method) 
+            for region in self.coupled_boundaries:
+                # First the normal consistency terms from integration by parts
+                # Convection
+                coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(u(NS), v(NS))
+                # Diffusion
+                coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
+                # Pressure
+                coupling += p(NS)*dot(n(NS), v(NS))
+                # Potential
+                coupling -= dot(grad(phi(PF)), n(PF))*r(PF)
+                
+                # Weak Dirichlet for the Navier-Stokes velocities
+                zero_u = u(NS) - grad(phi(PF))
+                eta_u = 10
+                coupling += dot(mu(NS)*dot(grad(v(NS)), n(NS)) - dot(u_conv(NS), grad(v(NS))), zero_u)
+                coupling += eta_u*dot(zero_u, v(NS))
+                
+                # Weak Dirichlet for the potential
+                zero_phi = phi(PF) - self.phi(PF) - \
+                           dt(NS)/2*dot(grad(phi(PF)), grad(self.phi(PF))) - \
+                           dt(NS)/rho(NS)*p(NS)
+                eta_phi = 10
+                coupling += dot(dot(grad(r(PF)), n(PF)), zero_phi)
+                coupling += eta_phi*dot(zero_phi, r(PF))
+                
+                # Add the coupling terms to the equation system
+                eq += coupling*self.dS(region)
+        
+        else:
+            assert self.coupling_method == 'uncoupled'
+            # The boundary terms from integration by parts
+            for region in self.coupled_boundaries:
+                # Convection
+                coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(u(NS), v(NS))
+                # Diffusion
+                coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
+                # Pressure
+                coupling += p(NS)*dot(n(NS), v(NS))
+                # Potential
+                coupling -= dot(grad(phi(PF)), n(PF))*r(PF)
+        
+        # The residual of the N-S momentum equation
         rs = rho*(u - up)/dt
         rs += rho*dot(grad(u), u_conv)
         rs -= mu*div(grad(u))
@@ -551,14 +599,15 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--output-step', type=int, default=Input.output_step,
                         help='timesteps between each generated plot')
     parser.add_argument('--no-supg', action='store_true')
-    parser.add_argument('-u', '--uncoupled', action='store_true')
+    parser.add_argument('-m', '--coupling-method', default='dirichlet',
+                        choices=['dirichlet', 'neumann', 'uncoupled'])
     args = parser.parse_args()
     
     inp = Input()
     inp.N1 = inp.N2 = args.N
     inp.tmax = args.tmax
     inp.dt = args.dt
-    inp.coupled_domains = not args.uncoupled
+    inp.coupling_method = args.coupling_method
     inp.use_supg = not args.no_supg
     inp.output_step = args.output_step 
     main(inp)

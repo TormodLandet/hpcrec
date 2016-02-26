@@ -59,7 +59,7 @@ class Input(object):
     # Which problem to solve and what type of mesh layout to make
     problem = 'Cylinder'
     layout = 'I'
-    coupled_domains = True
+    coupling_method = 'dirichlet' # or neumann or uncoupled
     
     U0 = 0.1    # Speed at inlet
     rho = 1     # Density
@@ -123,7 +123,7 @@ def main(inp):
                 C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
             
             phi_prev = pf_domain.phi
-            if inp.coupled_domains:
+            if inp.coupling_method == 'dirichlet':
                 # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
                 for ns_dof, _, _ in ns_u_map:
                     apply_dirichlet(A1, ns_dof)
@@ -144,6 +144,7 @@ def main(inp):
                     b2[pf_dof] = rho/dt*phi_prev[pf_dof]
             
             else:
+                assert inp.coupling_method == 'uncoupled'
                 # Remove coupling
                 if it == 1:
                     C1 *= 0
@@ -450,14 +451,15 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--output-step', type=int, default=Input.output_step,
                         help='timesteps between each generated plot')
     parser.add_argument('--no-supg', action='store_true')
-    parser.add_argument('-u', '--uncoupled', action='store_true')
+    parser.add_argument('-m', '--coupling-method', default='dirichlet',
+                        choices=['dirichlet', 'neumann', 'uncoupled'])
     args = parser.parse_args()
     
     inp = Input()
     inp.N1 = inp.N2 = args.N
     inp.tmax = args.tmax
     inp.dt = args.dt
-    inp.coupled_domains = not args.uncoupled
+    inp.coupling_method = args.coupling_method
     inp.use_supg = not args.no_supg
     inp.output_step = args.output_step 
     main(inp)
