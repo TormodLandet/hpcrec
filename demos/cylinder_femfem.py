@@ -8,8 +8,11 @@ from dolfin import div, grad, dot
 from cylinder import Input
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
-from utilities import SimpleLog, StreamFunction, SolutionProperties
+from utilities import SimpleLog, StreamFunction, SolutionProperties, define_penalty
 
+COUPLED_NO = 'uncoupled'
+COUPLED_DIRICHLET = 'dirichlet'
+COUPLED_NEUMANN = 'neumann'
 
 def main(inp):
     log = SimpleLog('cylinder_femfem.log')
@@ -284,8 +287,8 @@ class FemFemDomain(object):
     
     def _create_boundary_conditions(self):        
         # "Constants" that are changed every time step before assembly
-        self.U0 = df.Constant(0)
-        self.t = df.Constant(0)
+        self.U0 = df.Constant(-1)
+        self.t = df.Constant(-1)
         
         # Dirichlet boundary conditions
         W = self.funcspace
@@ -312,12 +315,12 @@ class FemFemDomain(object):
         self.potential_ds_boundaries = [6, 8]
         self.potential_inflow_boundaries = [7]
         
-        if self.input.coupling_method == 'uncoupled':
+        if self.input.coupling_method == COUPLED_NO:
             # NS inlet BCs
             self.dirichlet_bcs.append(df.DirichletBC(W.sub(0), self.U0, marker, 4))
             self.dirichlet_bcs.append(df.DirichletBC(W.sub(1), zero, marker, 4))
             # PF outlet BC
-            self.dirichlet_bcs.append(df.DirichletBC(W.sub(3), zero, marker, 4))
+            self.dirichlet_bcs.append(df.DirichletBC(W.sub(3), df.Constant(1), marker, 4))
     
     
     def _create_weak_form(self):
@@ -360,7 +363,8 @@ class FemFemDomain(object):
         eq += rho*dot(u - up, v)/dt*dx_ns
         # ∇⋅(ρ u ⊗ u_conv)
         #eq += div(rho*u[d]*u_conv)*v[d]*dx
-        eq += rho*dot(dot(grad(u), u_conv), v)*dx_ns
+        #eq += rho*dot(dot(grad(u), u_conv), v)*dx_ns
+        eq -= rho*dot(u, div(df.outer(v, u_conv)))*dx_ns
         # -∇⋅μ(∇u)
         eq += mu*df.inner(grad(u), grad(v))*dx_ns
         # ∇p
@@ -393,11 +397,11 @@ class FemFemDomain(object):
         
         # Potential inlet BC, from integration by parts
         for region in self.potential_inflow_boundaries:
-            eq -= self.U0*r*ds(region)
+            eq -= -self.U0*r*ds(region)
         
         # Domain coupling 
         NS, PF = '-', '+' # PF is plus since marker 2 > marker 1
-        if self.coupling_method == 'neumann':
+        if self.coupling_method == COUPLED_NEUMANN:
             # Replace all natural boundary conditions (Neumann in this case)
             # with the value from the opposite domain
             for region in self.coupled_boundaries:
@@ -413,49 +417,61 @@ class FemFemDomain(object):
                 # Add the coupling terms to the equation system
                 eq += coupling*self.dS(region)
         
-        elif self.coupling_method == 'dirichlet':
+        elif self.coupling_method == COUPLED_DIRICHLET:
             # Set the values at the coupled boundaries to the value in the opposite
-            # domain by weak Dirichlet boundary conditions (Nitsche's method) 
+            # domain by weak Dirichlet boundary conditions (Nitsche's method)
+            
+            # Penalties
+            Pu = self.u0.function_space().ufl_element().degree()
+            Pphi = self.phi.function_space().ufl_element().degree()
+            penalty_ns  = define_penalty(self.mesh, Pu, inp.mu, inp.mu)
+            penalty_pf  = define_penalty(self.mesh, Pphi, 1, 1)
+            penalty_ns = df.Constant(2*penalty_ns) # Penalty on ds = 2*penalty on dS
+            penalty_pf = df.Constant(2*penalty_pf) # Penalty on ds = 2*penalty on dS
+            
+            uconv_uw = (dot(u_conv, n) + abs(dot(u_conv, n)))/2.0
             for region in self.coupled_boundaries:
-                # First the normal consistency terms from integration by parts
+                coupling = 0
+                
+                # Divergence free criterion
+                #coupling += q(NS)*grad(phi(PF))
+                
                 # Convection
-                coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(u(NS), v(NS))
+                zero_u = u(NS) - grad(phi(PF))
+                #coupling += rho(NS)*dot(u(NS) - potvel(PF), v(NS))*uconv_uw(NS)
+                coupling += rho(NS)*dot(zero_u, v(NS))*uconv_uw(NS)
+                
                 # Diffusion
                 coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
-                # Pressure
-                coupling += p(NS)*dot(n(NS), v(NS))
-                # Potential
+                coupling -= mu(NS)*dot(dot(grad(v(NS)), n(NS)), zero_u)
+                coupling += penalty_ns*dot(zero_u, v(NS))
+                
+                # Weak Dirichlet for the potential / Bernoulli's equation with constant = 0
+                zero_phi = (phi(PF) - self.phi(PF))/dt(NS) + \
+                           0.5*dot(grad(phi(PF)), grad(self.phi(PF))) + \
+                           p(NS)/rho(NS)
                 coupling -= dot(grad(phi(PF)), n(PF))*r(PF)
+                coupling -= dot(grad(r(PF)), n(PF))*zero_phi
+                coupling += penalty_pf*zero_phi*r(PF)
                 
-                # Weak Dirichlet for the Navier-Stokes velocities
-                zero_u = u(NS) - grad(phi(PF))
-                eta_u = 10
-                coupling += dot(mu(NS)*dot(grad(v(NS)), n(NS)) - dot(u_conv(NS), grad(v(NS))), zero_u)
-                coupling += eta_u*dot(zero_u, v(NS))
-                
-                # Weak Dirichlet for the potential
-                zero_phi = phi(PF) - self.phi(PF) - \
-                           dt(NS)/2*dot(grad(phi(PF)), grad(self.phi(PF))) - \
-                           dt(NS)/rho(NS)*p(NS)
-                eta_phi = 10
-                coupling += dot(dot(grad(r(PF)), n(PF)), zero_phi)
-                coupling += eta_phi*dot(zero_phi, r(PF))
+                # Pressure IBP term
+                coupling += p(NS)*dot(n(NS), v(NS))
                 
                 # Add the coupling terms to the equation system
                 eq += coupling*self.dS(region)
         
         else:
-            assert self.coupling_method == 'uncoupled'
+            assert self.coupling_method == COUPLED_NO
             # The boundary terms from integration by parts
-            for region in self.coupled_boundaries:
-                # Convection
-                coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(u(NS), v(NS))
-                # Diffusion
-                coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
-                # Pressure
-                coupling += p(NS)*dot(n(NS), v(NS))
-                # Potential
-                coupling -= dot(grad(phi(PF)), n(PF))*r(PF)
+            #for region in self.coupled_boundaries:
+            #    # Convection
+            #    coupling = rho(NS)*dot(u_conv(NS), n(NS))*dot(u(NS), v(NS))
+            #    # Diffusion
+            #    coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
+            #    # Pressure
+            #    coupling += p(NS)*dot(n(NS), v(NS))
+            #    # Potential
+            #    coupling -= dot(grad(phi(PF)), n(PF))*r(PF)
         
         # The residual of the N-S momentum equation
         rs = rho*(u - up)/dt
@@ -492,13 +508,17 @@ class FemFemDomain(object):
         """
         Define projections into global velocity and pressure functions
         """
+        inc_NS = df.Constant(1)
+        inc_PF = df.Constant(1)
+        
         # Combined velocity, uC
         V = self.u0.function_space()
         u, v = df.TrialFunction(V), df.TestFunction(V)
-        a = u*v*df.dx
-        L0 = self.u0*v*self.dx_ns + self.phi.dx(0)*v*self.dx_pf
-        L1 = self.u1*v*self.dx_ns + self.phi.dx(1)*v*self.dx_pf
+        a = u*v*inc_NS*self.dx_ns + u*v*inc_PF*self.dx_pf
+        L0 = inc_NS*self.u0*v*self.dx_ns + inc_PF*self.phi.dx(0)*v*self.dx_pf
+        L1 = inc_NS*self.u1*v*self.dx_ns + inc_PF*self.phi.dx(1)*v*self.dx_pf
         A = df.assemble(a)
+        A.ident_zeros()
         uC = df.as_vector([df.Function(V), df.Function(V)])
         self._uC = (uC, A, L0, L1)
         
@@ -506,11 +526,13 @@ class FemFemDomain(object):
         rho, dt = self.input.rho, self.input.dt
         V = self.p.function_space()
         u, v = df.TrialFunction(V), df.TestFunction(V)
-        a = u*v*df.dx
-        L = self.p*v*self.dx_ns
-        p_pf = - rho/dt*(self.phi - self.phi_p) - rho/2*dot(uC, uC)
-        L += p_pf*v*self.dx_pf
+        a = u*v*inc_NS*self.dx_ns + u*v*inc_PF*self.dx_pf
+        L = inc_NS*self.p*v*self.dx_ns
+        vel = grad(self.phi)
+        p_pf = - rho/dt*(self.phi - self.phi_p) - rho/2*dot(vel, vel)
+        L += inc_PF*p_pf*v*self.dx_pf
         A = df.assemble(a)
+        A.ident_zeros()
         pC = df.Function(V)
         self._pC = (pC, A, L)
 
@@ -543,9 +565,12 @@ def plot_domain(inp, domain, simulation_time, stream_function=None, quiver=False
     
     # Plot functions
     uC, pC = domain.calculate_combined_functions()
-    pyplot.sca(axes[0]); Cu = df.plot(uC[0], backend='matplotlib', shading='gouraud')
-    pyplot.sca(axes[1]); __ = df.plot(uC[1], backend='matplotlib', shading='gouraud')
-    pyplot.sca(axes[3]); Cp = df.plot(pC, backend='matplotlib', shading='gouraud')
+    props = dict(backend='matplotlib', shading='gouraud')
+    velprops = dict(backend='matplotlib', shading='gouraud',
+                    vmin=-2.5*inp.U0, vmax=2.5*inp.U0)
+    pyplot.sca(axes[0]); Cu0 = df.plot(uC[0], **velprops)
+    pyplot.sca(axes[1]); Cu1 = df.plot(uC[1], **velprops)
+    pyplot.sca(axes[3]); Cp = df.plot(pC, **props)
     
     # Stream function
     if stream_function:
@@ -564,7 +589,7 @@ def plot_domain(inp, domain, simulation_time, stream_function=None, quiver=False
         df.plot(mesh, backend='matplotlib', c='#999999', lw=0.2)
     
     # Colorbars
-    fig.colorbar(Cu, cax=axes[4])
+    fig.colorbar(Cu0, cax=axes[4])
     fig.colorbar(Cp, cax=axes[5])
     
     for ax in axes[:4]:
@@ -599,8 +624,8 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--output-step', type=int, default=Input.output_step,
                         help='timesteps between each generated plot')
     parser.add_argument('--no-supg', action='store_true')
-    parser.add_argument('-m', '--coupling-method', default='dirichlet',
-                        choices=['dirichlet', 'neumann', 'uncoupled'])
+    parser.add_argument('-m', '--coupling-method', default=COUPLED_DIRICHLET,
+                        choices=[COUPLED_NO, COUPLED_NEUMANN, COUPLED_DIRICHLET])
     args = parser.parse_args()
     
     inp = Input()
