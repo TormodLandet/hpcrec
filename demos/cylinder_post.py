@@ -1,11 +1,17 @@
 import sys
+import argparse
 import numpy
 from matplotlib import pyplot
 
+parser = argparse.ArgumentParser()
+parser.add_argument('logfile', default='cylinder.log')
+parser.add_argument('--tstart', type=float, default=0, help='steady state start')
+args = parser.parse_args()
+
 
 pyplot.style.use('ggplot')
-tstart = 150
-inpfile = 'cylinder.log'
+tstart = args.tstart
+inpfile = args.logfile
 d = 0.1
 U0 = 0.1
 rho = 1
@@ -39,7 +45,7 @@ def main():
     
     timeseries = {'t': [], 'Fp0': [], 'Fp1': [], 'Fv0': [], 'Fv1': []}
     for line in open(inpfile, 'rt'):
-        if 'Fp' not in line:
+        if 'Fv' not in line or line[-1] != '\n':
             continue
         wds = line.split()
         ip = wds.index('Fp:')
@@ -57,31 +63,43 @@ def main():
     sieve = t > tstart
     t =  t[sieve]
     
-    for name in 'Fp0 Fp1'.split():
+    figures = [pyplot.figure(), pyplot.figure()]
+    legends = [[], []]
+    
+    for name in 'Fp0 Fp1 Fv0 Fv1'.split():
         data = timeseries[name][sieve]
         mean = data.mean()
         data2 = data - mean
         I = ts_zero_upcrossings(data2)
-        J = ts_peaks(data2, I)
-        peaks = data[J]
-        Tz = ts_zero_upcrossing_period(t, I)
-        a = peaks.mean()
         scale = 2/(rho*U0**2*d)
         
-        print name
-        print '    mean', mean*scale
-        print '    Tz  ', Tz
-        print '    ampl', a*scale
-        print '      St', d/(Tz*U0)
-        print '     rms', ((data*scale)**2).mean()**0.5
+        direction = int(name[-1])
+        fig = figures[direction]
+        pyplot.sca(fig.gca())
+        line, = pyplot.plot(t, data*scale)
+        legends[direction].append((line, name))
+        pyplot.title('Force in %s direction' % ('lift' if direction else 'drag'))
         
-        pyplot.figure()
-        pyplot.plot(t, data*scale)
-        pyplot.plot(t[I], data[I]*scale, 'bo')
-        pyplot.plot(t[J], data[J]*scale, 'ro')
-        pyplot.title(name)
+        if len(I) > 2:
+            J = ts_peaks(data2, I)
+            peaks = data[J]
+            Tz = ts_zero_upcrossing_period(t, I)
+            a = peaks.mean()    
+            print name
+            print '    mean', mean*scale
+            print '    Tz  ', Tz
+            print '    ampl', a*scale
+            print '      St', d/(Tz*U0)
+            print '     rms', ((data*scale)**2).mean()**0.5    
+            pyplot.plot(t[I], data[I]*scale, 'bo')
+            pyplot.plot(t[J], data[J]*scale, 'ro')
     
-    #pyplot.show()
+    for fig, leg in zip(figures, legends):
+        pyplot.sca(fig.gca())
+        lines, names = zip(*leg)
+        pyplot.legend(lines, names)
+    
+    pyplot.show()
 
 
 if __name__ == '__main__':

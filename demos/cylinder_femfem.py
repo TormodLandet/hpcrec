@@ -150,7 +150,8 @@ class FemFemDomain(object):
         n = df.FacetNormal(self.mesh)
         
         # Viscosity, μ(∇u)
-        sigma_n = dot(grad(self.u), n)
+        mu = df.Constant(inp.mu)
+        sigma_n = mu*dot(grad(self.u), -n)
         Fvx = df.assemble(sigma_n[0]*ds)
         Fvy = df.assemble(sigma_n[1]*ds)
         
@@ -293,6 +294,8 @@ class FemFemDomain(object):
         # Dirichlet boundary conditions
         W = self.funcspace
         zero = df.Constant(0)
+        tfac = "(t < T0 ? 0 : (t > T0+1.0 ? 0.0 : 1.0))"
+        disturbance = df.Expression('%s*U0*0.1' % tfac, t=self.t, U0=self.U0, T0=18.0, degree=0)
         
         marker = self.facet_marker
         self.dirichlet_bcs = [# Outlet BCs
@@ -300,7 +303,7 @@ class FemFemDomain(object):
                               #df.DirichletBC(W.sub(1), zero, marker, 2),
                               # Bottom BCs
                               #df.DirichletBC(W.sub(0), self.U0, marker, 1),
-                              df.DirichletBC(W.sub(1), zero, marker, 1),
+                              df.DirichletBC(W.sub(1), disturbance, marker, 1),
                               # Top BCs
                               #df.DirichletBC(W.sub(0), self.U0, marker, 3),
                               df.DirichletBC(W.sub(1), zero, marker, 3),
@@ -430,18 +433,17 @@ class FemFemDomain(object):
             penalty_pf = df.Constant(2*penalty_pf) # Penalty on ds = 2*penalty on dS
             
             uconv_uw = (dot(u_conv, n) + abs(dot(u_conv, n)))/2.0
+            uconv_dw = (dot(u_conv, n) - abs(dot(u_conv, n)))/2.0
             for region in self.coupled_boundaries:
                 coupling = 0
                 
-                # Divergence free criterion
-                #coupling += q(NS)*grad(phi(PF))
-                
                 # Convection
-                zero_u = u(NS) - grad(phi(PF))
-                #coupling += rho(NS)*dot(u(NS) - potvel(PF), v(NS))*uconv_uw(NS)
-                coupling += rho(NS)*dot(zero_u, v(NS))*uconv_uw(NS)
+                pot_u = grad(phi(PF))
+                coupling += rho(NS)*dot(u(NS), v(NS))*uconv_uw(NS)
+                coupling += rho(NS)*dot(pot_u, v(NS))*uconv_dw(NS)
                 
                 # Diffusion
+                zero_u = u(NS) - pot_u
                 coupling -= mu(NS)*dot(dot(grad(u(NS)), n(NS)), v(NS))
                 coupling -= mu(NS)*dot(dot(grad(v(NS)), n(NS)), zero_u)
                 coupling += penalty_ns*dot(zero_u, v(NS))
