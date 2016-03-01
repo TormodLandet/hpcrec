@@ -66,9 +66,10 @@ class Input(object):
     Re = 100    # Reynolds number (determines the viscosity)
     
     dt = 0.01   # Timestep
-    tmax = 100  # Time duration of the simulation
+    tmax = 150  # Time duration of the simulation
     tramp = 0.3 # Time duration of the initial inlet velocity ramp-up
     output_step = 1e100
+    disturbance_time = (10, 12, 14)
     
     # Finite element discretization
     Pu = 2
@@ -85,6 +86,17 @@ class Input(object):
     @property
     def mu(self):
         return self.d*self.U0*self.rho/self.Re
+
+    def disturbance(self, t):
+        "Disturbance to trigger alternating vortex shedding"
+        t1, t2, t3 = self.disturbance_time
+        if t1 < t < t2:
+            tfac = (t - t1)/(t2 - t1)
+        elif 12 <= t < 14:
+            tfac = 1 - (t - t2)/(t3 - t2)
+        else:
+            tfac = 0
+        return tfac * 0.1 * self.U0 
 
 
 def main(inp):

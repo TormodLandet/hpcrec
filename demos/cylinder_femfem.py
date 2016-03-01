@@ -16,6 +16,8 @@ COUPLED_NEUMANN = 'neumann'
 
 def main(inp):
     log = SimpleLog('cylinder_femfem.log')
+    log.info('Running cylinder_femfem with input:\n')
+    log.dump_object(inp, '    ')
     
     # Make domain meshes
     ns_domain = NavierStokesDomain(inp)
@@ -83,6 +85,7 @@ def main(inp):
             if it % inp.output_step == 0:
                 fig = plot_domain(inp, domain, t, stream_function)
                 fig.savefig('fig/timestep_%05d_t_%08d.png' % (it, round(t*1e4)), dpi=100)
+                log.flush()
         
         log.info('  Timestep: %4.2fs' % (time.time() - timer_ts_start))
             
@@ -126,6 +129,7 @@ class FemFemDomain(object):
         self.u_conv1.assign(self.u1)
         if self.use_supg:
             self.tau_solver.solve_local_rhs(self.tau)
+        self.disturbance.assign(df.Constant(self.input.disturbance(t)))
         
         a, L = self._weak_form
         A, b = df.assemble_system(a, L, self.dirichlet_bcs)
@@ -294,8 +298,7 @@ class FemFemDomain(object):
         # Dirichlet boundary conditions
         W = self.funcspace
         zero = df.Constant(0)
-        tfac = "(t < T0 ? 0 : (t > T0+1.0 ? 0.0 : 1.0))"
-        disturbance = df.Expression('%s*U0*0.1' % tfac, t=self.t, U0=self.U0, T0=18.0, degree=0)
+        self.disturbance = df.Constant(0)
         
         marker = self.facet_marker
         self.dirichlet_bcs = [# Outlet BCs
@@ -303,7 +306,7 @@ class FemFemDomain(object):
                               #df.DirichletBC(W.sub(1), zero, marker, 2),
                               # Bottom BCs
                               #df.DirichletBC(W.sub(0), self.U0, marker, 1),
-                              df.DirichletBC(W.sub(1), disturbance, marker, 1),
+                              df.DirichletBC(W.sub(1), self.disturbance, marker, 1),
                               # Top BCs
                               #df.DirichletBC(W.sub(0), self.U0, marker, 3),
                               df.DirichletBC(W.sub(1), zero, marker, 3),

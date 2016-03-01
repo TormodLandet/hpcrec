@@ -53,6 +53,20 @@ class SimpleLog(object):
         yield
         duration = time.time() - t_start
         self.info(post_message % duration)
+    
+    def dump_object(self, obj, prefix=''):
+        for name in sorted(dir(obj)):
+            if name[0] == '_':
+                continue
+            value = getattr(obj, name)
+            if hasattr(value, '__call__'):
+                continue
+            self.info('%s%s = %r\n' % (prefix, name, value))
+    
+    def flush(self):
+        for f in self.files:
+            if f.fileno() != 1:
+                f.flush()
 
 
 def mat_to_csr(dolfin_matrix):
