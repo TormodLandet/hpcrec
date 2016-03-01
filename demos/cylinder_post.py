@@ -12,9 +12,6 @@ args = parser.parse_args()
 pyplot.style.use('ggplot')
 tstart = args.tstart
 inpfile = args.logfile
-d = 0.1
-U0 = 0.1
-rho = 1
 
 
 def ts_zero_upcrossing_period(t, I):
@@ -44,8 +41,17 @@ def main():
         inpfile = sys.argv[1]
     
     timeseries = {'t': [], 'Fp0': [], 'Fp1': [], 'Fv0': [], 'Fv1': []}
+    inp = {}
     for line in open(inpfile, 'rt'):
-        if 'Fv' not in line or line[-1] != '\n':
+        if line.startswith('    ') and line.count('=') == 1:
+            wds = line.split()
+            name = wds[0]
+            K = 4 + len(name) + 3
+            value_str = line[K:].strip()
+            value = eval(value_str)
+            inp[name] = value
+            continue
+        elif 'Fv' not in line or line[-1] != '\n':
             continue
         wds = line.split()
         ip = wds.index('Fp:')
@@ -57,14 +63,23 @@ def main():
         timeseries['Fv0'].append(float(wds[iv+1]))
         timeseries['Fv1'].append(float(wds[iv+2]))
     
+    d = inp.get('d', 0.1)
+    U0 = inp.get('U0', 0.1)
+    rho = inp.get('rho', 1)
+    td1, _td2, td3 = inp.get('disturbance_time', (0, 0, 0))
+    
     for name in 't Fp0 Fp1 Fv0 Fv1'.split():
         timeseries[name] = numpy.array(timeseries[name], float)
     t = timeseries['t']
-    sieve = t > tstart
+    sieve = (t > tstart) & ((t < td1) | (t > td3))
     t =  t[sieve]
     
     figures = [pyplot.figure(), pyplot.figure()]
     legends = [[], []]
+    
+    print 'Input:'
+    for name, value in sorted(inp.items()):
+        print '    %s = %r' % (name, value)
     
     for name in 'Fp0 Fp1 Fv0 Fv1'.split():
         data = timeseries[name][sieve]
@@ -76,7 +91,9 @@ def main():
         direction = int(name[-1])
         fig = figures[direction]
         pyplot.sca(fig.gca())
-        line, = pyplot.plot(t, data*scale)
+        
+        data_plot = data2
+        line, = pyplot.plot(t, data_plot*scale)
         legends[direction].append((line, name))
         pyplot.title('Force in %s direction' % ('lift' if direction else 'drag'))
         
@@ -91,14 +108,15 @@ def main():
             print '    ampl', a*scale
             print '      St', d/(Tz*U0)
             print '     rms', ((data*scale)**2).mean()**0.5    
-            pyplot.plot(t[I], data[I]*scale, 'bo')
-            pyplot.plot(t[J], data[J]*scale, 'ro')
+            pyplot.plot(t[I], data_plot[I]*scale, 'bo')
+            pyplot.plot(t[J], data_plot[J]*scale, 'ro')
     
     for fig, leg in zip(figures, legends):
         pyplot.sca(fig.gca())
         lines, names = zip(*leg)
         pyplot.legend(lines, names)
     
+    print 'Tmax', t[-1]
     pyplot.show()
 
 
