@@ -9,10 +9,8 @@ from cylinder import Input
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
 from utilities import SimpleLog, StreamFunction, SolutionProperties, define_penalty
+from utilities import COUPLED_DIRICHLET, COUPLED_NEUMANN, COUPLED_NO, GEOM_CIRCULAR, GEOM_NACA0012
 
-COUPLED_NO = 'uncoupled'
-COUPLED_DIRICHLET = 'dirichlet'
-COUPLED_NEUMANN = 'neumann'
 
 def main(inp):
     log = SimpleLog('cylinder_femfem.log')
@@ -95,9 +93,14 @@ def main(inp):
         # Calculate the Courant and Peclet numbers
         Co_max = solprops.courant_number().vector().max()
         Pe_max = solprops.peclet_number().vector().max()
-        log.info('  Co: %6.1e  Pe: %6.1e\n' % (Co_max, Pe_max))
+        log.info('  Co: %6.1e  Pe: %6.1e' % (Co_max, Pe_max))
         
+        # Calculate the difference from the previous time step
+        du0 = df.errornorm(domain.u0_p, domain.u0, degree_rise=0)
+        du1 = df.errornorm(domain.u1_p, domain.u1, degree_rise=0)
+        log.info('  du: %6.1e\n' % (du0 + du1))
         
+    
     log.info('DONE in %.2fs\n' % (time.time() - timer_loop_start))
     
 
@@ -140,8 +143,13 @@ class FemFemDomain(object):
         w = self.func
         self.solver.solve(A, w.vector(), b)
         
-        # Spread to the component vectors
+        # Store old values
+        self.u0_p.assign(self.u0)
+        self.u1_p.assign(self.u1)
+        self.p_p.assign(self.p)
         self.phi_p.assign(self.phi)
+        
+        # Spread new values to the component vectors        
         self.assigner.assign(self.functions, w)
         for func in self.functions:
             func.vector().apply('insert') # dolfin bug #587
@@ -268,6 +276,11 @@ class FemFemDomain(object):
         self.u_conv1 = df.Function(V)
         self.p = df.Function(Q)
         self.phi = df.Function(R)
+        
+        # Functions at the previous time step
+        self.u0_p = df.Function(V)
+        self.u1_p = df.Function(V)
+        self.p_p = df.Function(Q)
         self.phi_p = df.Function(R)
         
         if self.use_lagrange_multiplicator:
@@ -631,6 +644,8 @@ if __name__ == '__main__':
     parser.add_argument('--no-supg', action='store_true')
     parser.add_argument('-m', '--coupling-method', default=COUPLED_DIRICHLET,
                         choices=[COUPLED_NO, COUPLED_NEUMANN, COUPLED_DIRICHLET])
+    parser.add_argument('-g', '--geometry', default=GEOM_CIRCULAR,
+                        choices=[GEOM_CIRCULAR, GEOM_NACA0012])
     args = parser.parse_args()
     
     inp = Input()
@@ -639,5 +654,16 @@ if __name__ == '__main__':
     inp.dt = args.dt
     inp.coupling_method = args.coupling_method
     inp.use_supg = not args.no_supg
-    inp.output_step = args.output_step 
+    inp.output_step = args.output_step
+    inp.geometry = args.geometry
+    inp.disturbance_time = (0, 0, 0)
+    
+    if inp.geometry == GEOM_CIRCULAR:
+        inp.Re = 50
+    elif inp.geometry == GEOM_NACA0012:
+        inp.d = 0.3
+        inp.l2 = 1.5
+        inp.f = 0.3
+        inp.Re = 200
+    
     main(inp)

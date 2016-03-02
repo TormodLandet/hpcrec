@@ -4,7 +4,7 @@ import subprocess
 import dolfin as df
 from dolfin import dx, div, grad, dot
 import numpy
-from utilities import mat_to_csr
+from utilities import mat_to_csr, GEOM_CIRCULAR, GEOM_NACA0012
 
 
 class NavierStokesDomain(object):
@@ -175,7 +175,7 @@ class NavierStokesWeakForm(object):
         x0, x1 = 0, self.input.l2
         y0, y1 = -self.input.h2/2, self.input.h2/2
         
-        if self.input.problem != 'Cylinder':
+        if self.input.geometry == 'None':
             # Create mesh
             p0 = df.Point(x0, y0)
             p1 = df.Point(x1, y1)
@@ -185,6 +185,15 @@ class NavierStokesWeakForm(object):
             self.mesh = df.RectangleMesh(p0, p1, Nx, Ny)
             self.regions = None
             return
+        elif self.input.geometry == GEOM_CIRCULAR:
+            prefix = 'cylinder'
+        elif self.input.geometry == GEOM_NACA0012:
+            prefix = 'naca0012'
+        
+        geo_file = '%s_gmsh.geo' % prefix
+        msh_file = '%s_gmsh.msh' % prefix
+        xml_file = '%s_gmsh.xml' % prefix
+        xml2_file = '%s_gmsh_facet_region.xml' % prefix
         
         # Create unstructured mesh with gmsh
         assert df.MPI.size(df.mpi_comm_world()) == 1
@@ -194,15 +203,15 @@ class NavierStokesWeakForm(object):
                 '-setnumber',  'f', repr(self.input.f),
                 '-setnumber',  'd', repr(self.input.d),
                 '-setnumber',  'h', repr(self.input.h2/self.input.N2),
-                '-2', 'cylinder_gmsh.geo', '-o', 'cylinder_gmsh.msh']
-        cmd2 = ['dolfin-convert', 'cylinder_gmsh.msh', 'cylinder_gmsh.xml']
+                '-2', geo_file, '-o', msh_file]
+        cmd2 = ['dolfin-convert', msh_file, xml_file]
         with open('/dev/null', 'w') as devnull:
             for cmd in (cmd1, cmd2):
                 print 'Meshgen: ', ' '.join(cmd)
                 subprocess.call(cmd, stdout=devnull, stderr=devnull)
                 
-        self.mesh = df.Mesh('cylinder_gmsh.xml')
-        self.regions = df.MeshFunction('size_t', self.mesh, 'cylinder_gmsh_facet_region.xml')
+        self.mesh = df.Mesh(xml_file)
+        self.regions = df.MeshFunction('size_t', self.mesh, xml2_file)
         assert self.mesh.topology().dim() == 2
     
     def _create_functions(self):
@@ -244,11 +253,8 @@ class NavierStokesWeakForm(object):
         self.dof_coordinates = W.tabulate_dof_coordinates().reshape((-1, 2))
     
     def _create_boundary_conditions(self):
-        has_cylinder = self.regions is not None
-        
-        if has_cylinder:
+        if self.input.problem == 'Cylinder':
             marker = self.regions
-        
         else:
             x0, x1 = 0, self.input.l2
             y0, y1 = -self.input.h2/2, self.input.h2/2

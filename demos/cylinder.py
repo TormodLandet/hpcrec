@@ -45,6 +45,7 @@ import hpc
 from cylinder_ns import NavierStokesDomain
 from cylinder_hpc import PotentialFlowDomain
 from utilities import SimpleLog, StreamFunction
+from utilities import COUPLED_DIRICHLET, COUPLED_NO, GEOM_CIRCULAR, GEOM_NACA0012
 
 
 class Input(object):
@@ -58,8 +59,9 @@ class Input(object):
     
     # Which problem to solve and what type of mesh layout to make
     problem = 'Cylinder'
+    geometry = GEOM_CIRCULAR
     layout = 'I'
-    coupling_method = 'dirichlet' # or neumann or uncoupled
+    coupling_method = COUPLED_DIRICHLET # or neumann or uncoupled
     
     U0 = 0.1    # Speed at inlet
     rho = 1     # Density
@@ -105,6 +107,9 @@ def main(inp):
     warnings.simplefilter('error', scipy.sparse.SparseEfficiencyWarning)
     
     log = SimpleLog('cylinder.log')
+    log.info('Running cylinder_femfem with input:\n')
+    log.dump_object(inp, '    ')
+    
     ns_domain = NavierStokesDomain(inp)
     pf_domain = PotentialFlowDomain(inp)
     ns_u_map, pf_p_map = get_domain_coupling(ns_domain, pf_domain)
@@ -135,7 +140,7 @@ def main(inp):
                 C1, C2 = off_diagonal_blocks(A1, A2, ns_u_map, pf_p_map)
             
             phi_prev = pf_domain.phi
-            if inp.coupling_method == 'dirichlet':
+            if inp.coupling_method == COUPLED_DIRICHLET:
                 # Apply Dirichlet boundary conditions to the Navier-Stokes block matrix
                 for ns_dof, _, _ in ns_u_map:
                     apply_dirichlet(A1, ns_dof)
@@ -156,7 +161,7 @@ def main(inp):
                     b2[pf_dof] = rho/dt*phi_prev[pf_dof]
             
             else:
-                assert inp.coupling_method == 'uncoupled'
+                assert inp.coupling_method == COUPLED_NO
                 # Remove coupling
                 if it == 1:
                     C1 *= 0
@@ -463,8 +468,10 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--output-step', type=int, default=Input.output_step,
                         help='timesteps between each generated plot')
     parser.add_argument('--no-supg', action='store_true')
-    parser.add_argument('-m', '--coupling-method', default='dirichlet',
-                        choices=['dirichlet', 'neumann', 'uncoupled'])
+    parser.add_argument('-m', '--coupling-method', default=COUPLED_DIRICHLET,
+                        choices=[COUPLED_NO, COUPLED_DIRICHLET])
+    parser.add_argument('-g', '--geometry', default=GEOM_CIRCULAR,
+                        choices=[GEOM_CIRCULAR, GEOM_NACA0012])
     args = parser.parse_args()
     
     inp = Input()
@@ -473,5 +480,12 @@ if __name__ == '__main__':
     inp.dt = args.dt
     inp.coupling_method = args.coupling_method
     inp.use_supg = not args.no_supg
-    inp.output_step = args.output_step 
+    inp.output_step = args.output_step
+    inp.geometry = args.geometry
+    
+    if inp.geometry == GEOM_NACA0012:
+        inp.d = 0.3
+        inp.l2 = 2
+        inp.f = 1
+    
     main(inp)

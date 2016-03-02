@@ -4,6 +4,12 @@ import numpy
 import scipy.sparse
 import dolfin as df
 
+COUPLED_NO = 'uncoupled'
+COUPLED_DIRICHLET = 'dirichlet'
+COUPLED_NEUMANN = 'neumann'
+
+GEOM_CIRCULAR = 'cylinder'
+GEOM_NACA0012 = 'NACA0012'
 
 RED = '\033[91m%s\033[0m'    # ANSI escape code Bright Red
 YELLOW = '\033[91m%s\033[0m' # ANSI escape code Bright Yellow
