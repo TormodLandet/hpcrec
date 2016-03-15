@@ -38,10 +38,40 @@ HARMONIC_POLYNOMIALS_2D = (
 )
 
 
-def eval_phi(domain, dof):
+def eval_phi(domain, dof, grad_grad=False):
     """
-    Calculate the interpolation coefficients for phi and its 
-    gradient at a given dof
+    Calculate the interpolation coefficients for ϕ and its gradient ∇ϕ at a
+    given dof.
+    
+    The only polynomials that contribute to the potential at x=y=0 is f_1 = 1.
+    For the derivatives, ∇ϕ, the contribution is only from f_2 and f_3:
+    
+    .. math::
+
+        \nabla f_2 = [1\ 0]  \qquad\qquad
+        \nabla f_3 = [0\ 1]
+    
+    This function returns dofs and weights for ϕ, ∂ϕ/∂x and ∂ϕ/∂y
+    
+    If ∇∇ϕ = grad(grad(phi)) is requested then these terms are also calculated,
+    and the function returns dofs and weights for ϕ, ∂ϕ/∂x, ∂ϕ/∂y, ∂²ϕ/∂x²,
+    ∂²ϕ/∂x∂y, ∂²ϕ/∂y∂x and ∂²ϕ/∂y² to enable evaluating the second order tensor
+    
+    .. math::
+    
+        \nabla\nabla\phi = \begin{bmatrix}
+                             \partial_{xx} \phi & \partial_{xy} \phi \\
+                             \partial_{yx} \phi & \partial_{yy} \phi
+                           \end{bmatrix}.
+    
+    The only polynomials that contribute at x=y=0 are f_4 and f_5:
+    
+    .. math::
+
+        \nabla\nabla f_4 = \begin{bmatrix} 2 & 0 \\ 0 & -2 \end{bmatrix} \qquad\qquad
+        \nabla\nabla f_5 = \begin{bmatrix} 0 & 2 \\ 2 &  0 \end{bmatrix}
+    
+    The number of return values is hence either 4 or 8                    
     """
     dof_neighbours = domain.dof_neighbours
     dof_coordinates = domain.dof_coordinates
@@ -69,7 +99,14 @@ def eval_phi(domain, dof):
     except:
         debug_local_matrix_errors(domain, dof, M)
     
-    return dof_neighbours[dof], C[0,:], C[1,:], C[2,:]
+    if not grad_grad:
+        return dof_neighbours[dof], C[0,:], C[1,:], C[2,:]
+    
+    Cd_dxdx = C[3,:]*2
+    Cd_dxdy = C[4,:]*2
+    Cd_dydx = C[4,:]*2
+    Cd_dydy = C[3,:]*-2
+    return dof_neighbours[dof], C[0,:], C[1,:], C[2,:], Cd_dxdx, Cd_dxdy, Cd_dydx, Cd_dydy
 
 
 def debug_local_matrix_errors(domain, dof, M):
@@ -112,4 +149,3 @@ def debug_local_matrix_errors(domain, dof, M):
     #pyplot.title('DOF %d, cells %r' % (main_dof, [c.index for c in cells]))
     pyplot.title('Condition number %15.5e' % cond)
     pyplot.show()
-

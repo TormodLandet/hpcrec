@@ -72,3 +72,11 @@ These relations are also entered into the global matrix :math:`\mathbf A`.
 
 The final global matrix :math:`\mathbf A` will be very sparse with at most 9 non zeros per row.
 This implementation uses SciPy (SuperLU, UMFPACK, various Krylov subspace iterative methods) or PETSc (SuperLU, UMFPACK, MUMPS, various Krylov subspace iterative methods) for solving the resulting sparse linear system.
+
+The code can also compute double derivatives of the potential, :math:`\nabla(\nabla\phi)=` ``grad(grad(phi))``.
+Performing the calculation we will find that only polynomials :math:`f_4` and :math:`f_5` will give non-zero tensors at :math:`x=y=0`:
+
+.. math::
+
+    \nabla\nabla f_4 = \begin{bmatrix}2 & 0 \\ 0 & -2\end{bmatrix} \qquad\qquad \nabla\nabla f_5 = \begin{bmatrix}0 & 1 \\ 1 & 0\end{bmatrix}
+
