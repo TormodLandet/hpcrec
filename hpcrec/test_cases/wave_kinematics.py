@@ -8,6 +8,7 @@ Typical usage::
     phi    = solve_wave_kinematics(domain, psi)
     u, w   = compute_velocity(domain, phi)
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -21,6 +22,7 @@ def create_wave_domain(
     x: np.ndarray,
     eta: np.ndarray,
     Nz: int | None = None,
+    oversample: int = 1,
 ) -> hpcrec.HPCDomain:
     """
     Build a periodic HPC domain for wave kinematics reconstruction.
@@ -42,7 +44,14 @@ def create_wave_domain(
         Free-surface elevation at each x-grid point, shape ``(Nx,)``.
     Nz:
         Number of vertical intervals.  If *None* (default) the value is
-        chosen so that ``dz ≈ dx`` at the free surface, clamped to ``>= 3``.
+        chosen so that ``dz ≈ dx`` (at the **oversampled** resolution) at
+        the free surface, clamped to ``>= 3``.
+    oversample:
+        Integer upsampling factor applied to the x-direction before building
+        the HPC domain.  Using ``oversample=4`` gives ``Nx_hpc = 4 * len(x)``
+        columns.  Uses :func:`scipy.signal.resample` (FFT-based), which is
+        exact for band-limited periodic signals.
+        The default ``1`` leaves the grid unchanged.
 
     Returns
     -------
@@ -58,7 +67,14 @@ def create_wave_domain(
     L = x[-1] + dx  # full periodic domain length
 
     if Nz is None:
-        Nz = max(3, int(round(depth / dx)))
+        # Base Nz on the original dx so z-resolution is independent of oversample
+        Nz = max(3, int(round(depth / dx * oversample)))
+
+    if oversample != 1:
+        Nx_calc = oversample * Nx
+        eta = resample_using_fft(eta, Nx_calc)
+        x = np.linspace(0.0, L, Nx_calc, endpoint=False)
+        Nx = Nx_calc
 
     # Build flat periodic domain as a topological template
     domain = hpcrec.rectangle_domain((0.0, 0.0), (L, 1.0), Nx, Nz, periodic_in_x=True)
@@ -77,6 +93,7 @@ def create_wave_domain(
 def solve_wave_kinematics(
     domain: hpcrec.HPCDomain,
     psi: np.ndarray,
+    oversample: int = 1,
 ) -> np.ndarray:
     """
     Assemble and solve for the velocity potential in the fluid domain.
@@ -94,23 +111,31 @@ def solve_wave_kinematics(
     domain:
         Domain created by :func:`create_wave_domain`.
     psi:
-        Velocity potential at the free surface, shape ``(Nx,)``.
+        Velocity potential at the free surface at the **original** HOSM
+        resolution, shape ``(Nx_orig,)``.
+    oversample:
+        Must match the value used in :func:`create_wave_domain`.  ``psi`` is
+        upsampled by this factor (FFT-based, via :func:`scipy.signal.resample`)
+        before the Dirichlet boundary condition is applied.
 
     Returns
     -------
     np.ndarray, shape ``(Ndof,)``
-        Velocity potential ``phi`` at all DOFs.
+        Velocity potential ``phi`` at all DOFs of the (oversampled) domain.
     """
     assert domain.grid_shape is not None, "Domain must have grid_shape set"
-    
+
     psi = np.asarray(psi, dtype=float)
     Nx, Nz = domain.grid_shape
+
+    if oversample != 1:
+        psi = resample_using_fft(psi, oversample * len(psi))
 
     bcs: list[hpcrec.BcType] = []
     for i in range(Nx):
         top_dof = i * (Nz + 1) + Nz
         bot_dof = i * (Nz + 1) + 0
-        bcs.append(("D",  top_dof, float(psi[i])))
+        bcs.append(("D", top_dof, float(psi[i])))
         bcs.append(("Ny", bot_dof, 0.0))
 
     A, b = hpcrec.assemble(domain)
@@ -160,3 +185,27 @@ def compute_velocity(
         w[k] = float(np.dot(cy, phi[neighbours]))
 
     return u, w
+
+
+def resample_using_fft(signal: np.ndarray, num: int) -> np.ndarray:
+    """
+    Resample a real periodic signal to ``num`` points using FFT interpolation.
+
+    Parameters
+    ----------
+    signal:
+        1-D input array of length N.
+    num:
+        Target number of output samples (must be > 0).
+    """
+    if num == len(signal):
+        return signal
+
+    try:
+        from scipy.signal import resample
+    except ImportError as e:
+        raise ImportError(
+            "scipy is required for resampling. Please install scipy."
+        ) from e
+
+    return resample(signal, num, axis=0)

@@ -1,2 +1,3 @@
-hosm_output.swd
-hosm_output.h5
+# Ignore WAMOD output files used for testing (demo notebook)
+*.swd
+*.h5
