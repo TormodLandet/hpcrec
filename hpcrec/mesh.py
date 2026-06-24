@@ -1,27 +1,33 @@
-# encoding: utf-8
-from __future__ import division
-import numpy
+from __future__ import annotations
+
+import numpy as np
 
 
 DOF_TYPE_INTERNAL = 0
 DOF_TYPE_EXTERNAL = 1
 
 
-class HPCDomain(object):
-    def __init__(self):
+class HPCDomain:
+    def __init__(self,
+        geometric_dimension: int,
+        dof_coordinates: np.ndarray,
+        dof_type: np.ndarray,
+        dof_neighbours: np.ndarray,
+        triangles: list[tuple[int,int,int]]
+        ):
         """
-        A HPC domain with dof coordinates, dof types and neighbour
-        connectivity. Additionally a triangulation is kept for
-        plotting and conversion to simplical meshes for FEniCS
-        interoperability. 
+        A HPC domain with dof coordinates, dof types and neighbour connectivity.
+        
+        Additionally a triangulation is kept for plotting and conversion to simplical meshes for
+        FEniCS interoperability. 
         """
-        self.geometric_dimension = None
-        self.dof_coordinates = None
-        self.dof_neighbours = None
-        self.dof_type = None
+        self.geometric_dimension: int = geometric_dimension
+        self.dof_coordinates: np.ndarray = dof_coordinates
+        self.dof_neighbours: np.ndarray = dof_neighbours
+        self.dof_type: np.ndarray = dof_type
         
         # For plotting and FEniCS conversion
-        self.triangles = None
+        self.triangles: list[tuple[int,int,int]] = triangles
     
     def to_fenics(self):
         """
@@ -30,25 +36,29 @@ class HPCDomain(object):
         return to_fenics(self)
 
 
-def rectangle_domain(p0, p1, Nx, Ny):
+def rectangle_domain(p0: tuple[float, float], p1: tuple[float, float], Nx: int, Ny: int) -> HPCDomain:
     """
     Generate a rectangular domain
     """
-    assert isinstance(Nx, (int, long)) and isinstance(Ny, (int, long))
+    assert isinstance(Nx, int), f"Expected Nx to be an int, got {type(Nx)} = {Nx}"
+    assert isinstance(Ny, int), f"Expected Ny to be an int, got {type(Ny)} = {Ny}"
     assert Nx > 1 and Ny > 1
     x0, y0 = p0
     x1, y1 = p1
-    
-    domain = HPCDomain()
-    domain.geometric_dimension = 2
-    domain.triangles = []
-    
+
     # Make vertices
-    xv = numpy.linspace(x0, x1, Nx+1)
-    yv = numpy.linspace(y0, y1, Ny+1)
+    xv = np.linspace(x0, x1, Nx+1)
+    yv = np.linspace(y0, y1, Ny+1)
     Nv = (Nx+1)*(Ny+1)
-    domain.dof_coordinates = numpy.zeros((Nv, 2), float)
-    domain.dof_type = numpy.zeros(Nv, int)
+    
+    domain = HPCDomain(
+        geometric_dimension=2,
+        dof_coordinates=np.zeros((Nv, 2), float),
+        dof_type=np.zeros(Nv, int),
+        dof_neighbours=np.zeros((Nv, 8), int),
+        triangles=[]
+    )
+    
     for i, x in enumerate(xv):
         for j, y in enumerate(yv):
             dof = i*(Ny+1) + j
@@ -60,7 +70,6 @@ def rectangle_domain(p0, p1, Nx, Ny):
                 domain.dof_type[dof] = DOF_TYPE_INTERNAL
     
     # Find neighbours
-    domain.dof_neighbours = numpy.zeros((Nv, 8), int)
     for i in range(Nx+1):
         # Find the central dof in the x-direction
         if i == 0:
@@ -108,7 +117,12 @@ def rectangle_domain(p0, p1, Nx, Ny):
     return domain
 
 
-def to_fenics(domain):
+def to_fenics(domain: HPCDomain) -> "dolfin.Mesh":
+    """
+    Convert a HPCDomain to a FEniCS mesh
+
+    NOTE: this requires an ancient version of FEniCS (this code is from 2016!)
+    """
     import dolfin as df
     
     # Create the mesh and open for editing

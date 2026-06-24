@@ -1,9 +1,18 @@
-# encoding: utf8
-from __future__ import division
+from __future__ import annotations
+from typing import TYPE_CHECKING, TypeAlias, Literal
+
 from .polynomials import eval_phi
 
+if TYPE_CHECKING:
+    from .mesh import HPCDomain
+    from .linalg import GenericMatrix, GenericVector
 
-def apply_bcs(domain, A, b, bcs):
+
+BcTypeCode: TypeAlias = Literal['D', 'Nx', 'Ny']
+BcType: TypeAlias = tuple[BcTypeCode, int, float]
+
+
+def apply_bcs(domain: HPCDomain, A: GenericMatrix, b: GenericVector, bcs: list[BcType]):
     """
     Apply boundary conditions
     """

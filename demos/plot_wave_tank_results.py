@@ -1,17 +1,19 @@
 from __future__ import division
-import cPickle as pickle
+import pickle
 from math import sinh, cosh, tanh, cos
+
 import numpy
 from matplotlib import pyplot
 from matplotlib.widgets import Slider
-from wave_tank_linear import WaveTankInput # for pickle
+
+from wave_tank_linear import WaveTankInput
 
 
-def plot_free_surface(wti, xpos, eta, tvec):
+def plot_free_surface(wti: WaveTankInput, xpos: list[float], eta: numpy.ndarray, tvec: numpy.ndarray, title: str = 'Free surface elevation'):
     fig, ax = pyplot.subplots()
     pyplot.subplots_adjust(bottom=0.25)
     axcolor = 'lightgoldenrodyellow'
-    slider_ax = pyplot.axes([0.1, 0.1, 0.8, 0.03], axisbg=axcolor)
+    slider_ax = pyplot.axes((0.1, 0.1, 0.8, 0.03), facecolor=axcolor)
     slider = Slider(slider_ax, 'Time', tvec[0], tvec[-1], valinit=tvec[0])
     
     xmin = xpos[0]
@@ -24,7 +26,7 @@ def plot_free_surface(wti, xpos, eta, tvec):
     ymin, ymax = ymin - 0.1*ydiff, ymax + 0.1*ydiff
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)
-    ax.set_title('Free surface elevation')
+    ax.set_title(title)
     
     line, = ax.plot(xpos, eta[0])
     
@@ -47,9 +49,9 @@ def plot_free_surface(wti, xpos, eta, tvec):
     analytical = numpy.zeros_like(xpos)
     g = wti.g
     h = wti.h
-    for ia, s in enumerate(wave_tank_input.wm_ampls):  
-        w = wave_tank_input.wm_freqs[ia]
-        #b = wave_tank_input.wm_phases[ia]
+    for ia, s in enumerate(wti.wm_ampls):  
+        w = wti.wm_freqs[ia]
+        #b = wti.wm_phases[ia]
         k = wave_number(w, g, h)
         kh = k*h
         a = 4*sinh(kh)/kh*(kh*sinh(kh) - cosh(kh) + 1)/(sinh(2*kh) + 2*kh)*s

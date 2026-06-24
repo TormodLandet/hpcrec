@@ -1,0 +1,64 @@
+[project]
+name = "hpcrec"
+description = "Harmonic Polynomial Cell method - for, e.g., wave kinematics reconstruction with a known free surface and free surface potential."
+readme = "README.md"
+authors = [{ name = "Tormod Landet" }]
+requires-python = ">=3.12"
+
+dependencies = [
+  # -------------------------------
+  # ---- External dependencies ---- 
+  "numpy >= 2.0",
+  "matplotlib >= 3.2",
+  "scipy >= 1.17",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+]
+
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/TormodLandet/hpcrec"
+Source = "https://github.com/TormodLandet/hpcrec"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch]
+version.path = "hpcrec/__init__.py"
+
+[tool.hatch.build]
+packages = ["hpcrec"]
+
+[dependency-groups]
+test = [
+    "pytest >= 8.0",
+]
+dev = [
+    # Dependencies for ease of development
+    "ipykernel >= 6.0",
+    "ruff >= 0.15",
+]
+
+[tool.uv]
+# These groups are included by uv by default (for developers)
+# You can use uv overrides --no-group=test or --only-group=docs etc
+default-groups = ["test", "dev"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

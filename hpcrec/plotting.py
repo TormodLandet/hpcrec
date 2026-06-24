@@ -1,7 +1,9 @@
-from __future__ import division
+import numpy as np
+
+from .mesh import HPCDomain
 
 
-def plot(domain, q=None):
+def plot(domain: HPCDomain, q=None):
     """
     Plot the solution phi given a domain and a set of polynomial coefficients. 
     If q is none then only the mesh is plotted
@@ -19,7 +21,7 @@ def interactive():
     pyplot.show()
 
 
-def _plot_2D(domain, phi):
+def _plot_2D(domain: HPCDomain, solution: None | np.ndarray = None):
     from matplotlib import pyplot
     
     # Create triangulation of cells
@@ -27,7 +29,7 @@ def _plot_2D(domain, phi):
     y = domain.dof_coordinates[:,1]
     triangles = domain.triangles
     
-    if phi is None:
+    if solution is None:
         # Plot the mesh
         fig = pyplot.figure()
         ax = fig.add_subplot(111)
@@ -37,5 +39,5 @@ def _plot_2D(domain, phi):
         # Plot the solution in the vertices (possibly interpolated)
         fig = pyplot.figure()
         ax = fig.add_subplot(111)
-        tp = ax.tripcolor(x, y, triangles, phi, edgecolors='k', shading='gouraud')
+        tp = ax.tripcolor(x, y, triangles, solution, edgecolors='k', shading='gouraud')
         pyplot.colorbar(tp)

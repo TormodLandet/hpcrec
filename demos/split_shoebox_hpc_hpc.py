@@ -3,15 +3,16 @@ from __future__ import division
 from math import cosh, sinh, sin, cos
 import numpy
 import scipy.sparse.linalg
-import hpc
+
+import hpcrec
 
 
-def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=False):
-    print 'Calculating shoebox with N=%d, L=%d' % (N, L)
+def split_shoebox_demo(N: int, L: float, h: float=1, k: float=1, show_plot: bool=True, neumann: bool=False, refine: bool=False):
+    print(f'Calculating shoebox with N={N}, L={L}')
     
     # Create geometry
-    domain1 = hpc.rectangle_domain((0, 0), (L, h), N*L//h, N)
-    domain2 = hpc.rectangle_domain((L, 0), (L*2, h), N*L//h, N)
+    domain1 = hpcrec.rectangle_domain((0, 0), (L, h), N*L//h, N)
+    domain2 = hpcrec.rectangle_domain((L, 0), (L*2, h), N*L//h, N)
     
     # Assemble global systems
     A1, b1 = assemble_side_hpc(domain1, L, k, h)
@@ -30,13 +31,13 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
     dofs1.sort(key=lambda dof: domain1.dof_coordinates[dof][1])
     dofs2.sort(key=lambda dof: domain2.dof_coordinates[dof][1])
     
-    C1 = hpc.Matrix(A1.shape[0], A2.shape[1])
-    C2 = hpc.Matrix(A2.shape[0], A1.shape[1])
+    C1 = hpcrec.Matrix(A1.shape[0], A2.shape[1])
+    C2 = hpcrec.Matrix(A2.shape[0], A1.shape[1])
     
     method = 'coupled Neuman/Dirichlet'
     if method == 'decoupled Neuman/Dirichlet':
         for dof1, dof2 in zip(dofs1, dofs2):
-            neighbours1, coeffs_diffx1 = hpc.eval_phi(domain1, dof1)[0::2]
+            neighbours1, coeffs_diffx1 = hpcrec.eval_phi(domain1, dof1)[0::2]
             neighbours2 = domain2.dof_neighbours[dof2]
             
             x1, y1 = domain1.dof_coordinates[dof1]
@@ -57,8 +58,8 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
         
     elif method  == 'coupled Neuman/Dirichlet':
         for dof1, dof2 in zip(dofs1, dofs2):
-            neighbours1, coeffs_diffx1 = hpc.eval_phi(domain1, dof1)[0::2]
-            neighbours2, coeffs_diffx2 = hpc.eval_phi(domain2, dof2)[0::2]
+            neighbours1, coeffs_diffx1 = hpcrec.eval_phi(domain1, dof1)[0::2]
+            neighbours2, coeffs_diffx2 = hpcrec.eval_phi(domain2, dof2)[0::2]
             
             A1[dof1,dof1] = 0
             b1[dof1] = 0
@@ -84,24 +85,24 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
     bb[len(b1):] = b2
     
     if len(bb) < 20:
-        print 'Block system matrix'
-        print '   ', ' '.join('%6d' % i for i in range(AA.shape[0]))
+        print("Block system matrix")
+        print('   ', ' '.join('%6d' % i for i in range(AA.shape[0])))
         for i, row in enumerate(numpy.array(AA.todense())):
-            print '%3d' % i,
+            print('%3d' % i, end=' ')
             for v in row:
-                print '%6.2g' % v,
-            print
-    print 'AA matrix info: shape %r cond %8.2g' % (AA.shape, numpy.linalg.cond(AA.todense()))
+                print('%6.2g' % v, end=' ')
+            print()
+    print(f'AA matrix info: shape {AA.shape} cond {numpy.linalg.cond(AA.todense()):8.2g}')
     
     # Solve global system
-    with hpc.Timer('Solve'):
+    with hpcrec.Timer('Solve'):
         try:
             lu = scipy.sparse.linalg.splu(AA)
             phi_all = lu.solve(bb)
         except Exception as e:
-            print 'ERROR:'
-            print e
-            print 'The global system matrix cannot be inverted!'
+            print('ERROR:')
+            print(e)
+            print('The global system matrix cannot be inverted!')
             exit()
     phi1 = phi_all[:len(b1)]
     phi2 = phi_all[len(b1):]
@@ -114,17 +115,17 @@ def split_shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine=Fal
             phi_a[dof] = cosh(k*(y+h))*sin(k*x)
     
         # Print the error
-        print 'Error: %15.8e' % numpy.linalg.norm(phi_i - phi_a)
+        print(f'Error: {numpy.linalg.norm(phi_i - phi_a):15.8e}')
     
     if show_plot:
-        from matplotlib import pyplot
-        pyplot.spy(AA.todense())
+        from matplotlib import pyplot as plt
+        plt.spy(AA.todense())
         domain = add_domains(domain1, domain2)
-        hpc.plot(domain)
-        pyplot.axvline(L, c='k', ls=':')
-        hpc.plot(domain, phi_all)
-        pyplot.axvline(L, c='k', ls=':')
-        pyplot.show()
+        hpcrec.plot(domain)
+        plt.axvline(L, c='k', ls=':')
+        hpcrec.plot(domain, phi_all)
+        plt.axvline(L, c='k', ls=':')
+        plt.show()
 
 
 def assemble_side_hpc(domain, L, k, h):
@@ -135,7 +136,7 @@ def assemble_side_hpc(domain, L, k, h):
     bcs = []
     dirichlet_dofs = []
     for dof, coord in enumerate(domain.dof_coordinates): 
-        if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
+        if domain.dof_type[dof] == hpcrec.DOF_TYPE_EXTERNAL:
             x, y = coord
             if y > h - 1e-8:
                 bcs.append(('D',  dof,   cosh(k*(y+h))*sin(k*x)))
@@ -148,21 +149,21 @@ def assemble_side_hpc(domain, L, k, h):
                 bcs.append(('Ny', dof, k*sinh(k*(y+h))*sin(k*x)))
     
     # Setup global equation system
-    A, b = hpc.assemble(domain)
-    hpc.apply_bcs(domain, A, b, bcs)
+    A, b = hpcrec.assemble(domain)
+    hpcrec.apply_bcs(domain, A, b, bcs)
     
     if len(b) < 10:
-        print 'Global system matrix'
-        print '   ', ' '.join('%8d' % i for i in range(A.shape[0]))
+        print('Global system matrix')
+        print('   ', ' '.join(f'{i:8d}' for i in range(A.shape[0])))
         for i, row in enumerate(A.array()):
-            print '%3d' % i,
+            print(f"{i:3d}", end=' ')
             for v in row:
-                print '%8.2g' % v,
-            print
+                print(f'{v:8.2g}', end=' ')
+            print()
         
-        print 'DOF coordinates'
+        print('DOF coordinates')
         for i, c in enumerate(domain.dof_coordinates):
-            print '%3d - %8.2g %8.2g' % (i, c[0], c[1])
+            print(f"{i:3d} - {c[0]:8.2g} {c[1]:8.2g}")
     
     return A, b
 
@@ -170,7 +171,7 @@ def assemble_side_hpc(domain, L, k, h):
 def add_domains(domain1, domain2):
     N1, N2 = len(domain1.dof_coordinates), len(domain2.dof_coordinates)
     
-    domain = hpc.HPCDomain()
+    domain = hpcrec.HPCDomain()
     domain.geometric_dimension = 2
     
     for arr_name in ('dof_coordinates', 'dof_type', 'dof_neighbours'):
@@ -206,16 +207,16 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    hpc.parameters['linear_algebra_backend'] = 'scipy'
-    hpc.parameters['solver'] = 'splu'
+    hpcrec.parameters['linear_algebra_backend'] = 'scipy'
+    hpcrec.parameters['solver'] = 'splu'
     
-    with hpc.Timer('Shoebox demo'):
+    with hpcrec.Timer('Shoebox demo'):
         try:
             split_shoebox_demo(N=args.N,
                                L=args.L,
                                show_plot=args.plot)
-        except hpc.HPCError as e:
-            print 'ERROR - '*9 + 'ERROR!!!\n'
-            print '   ', e 
-            print '\n' + 'ERROR - '*9 + 'ERROR!!!'
+        except hpcrec.HPCError as e:
+            print('ERROR - '*9 + 'ERROR!!!\n')
+            print('   ', e)
+            print('\n' + 'ERROR - '*9 + 'ERROR!!!\n')
 

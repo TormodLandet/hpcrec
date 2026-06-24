@@ -1,10 +1,15 @@
-from __future__ import division
-from .linalg import Matrix, Vector
-from .polynomials import eval_phi
+from typing import TypeAlias, Literal
+
 import numpy
 
+from .mesh import HPCDomain
+from .linalg import Matrix, Vector
+from .polynomials import eval_phi
 
-def assemble(domain, method='csr'):
+AssemblyMethod: TypeAlias = Literal['csr', 'standard']
+
+
+def assemble(domain: HPCDomain, method: AssemblyMethod='csr'):
     """
     Assemble HPC matrix for the given domain
     """
@@ -17,7 +22,7 @@ def assemble(domain, method='csr'):
         data, indices, indptr = [], [], [0]
         for dof in range(N):
             neighbours, coeffs, _, _ = eval_phi(domain, dof)
-            tmp = zip(neighbours, coeffs)
+            tmp = list(zip(neighbours, coeffs))
             tmp.append((dof, -1))
             tmp.sort()
             data.extend(-c for _d, c in tmp)

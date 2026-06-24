@@ -2,8 +2,13 @@
 This is an implementation of the Harmonic Polynomial Cell method by
 Shao & Faltinsen
 
-(c) 2016 - Tormod Landet
+(c) 2016 - Tormod Landet, original Python 2.7 implementation
+(c) 2024 - Tormod Landet, updated to Python 3.14
 """
+
+# Version of the package
+__version__ = "2026.06.24"
+
 # Exception
 class HPCError(Exception):
     pass
@@ -31,12 +36,12 @@ class Timer(object):
         self.task = task
     
     def __enter__(self):
-        print 'STARTING %s' % self.task
+        print(f'STARTING {self.task}')
         self.t_start = time.time()
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         t = time.time() - self.t_start
-        print 'DONE with %s in %.4f seconds' % (self.task, t)
+        print(f'DONE with {self.task} in {t:.4f} seconds')
 
 
 # Optional Cython module
@@ -60,7 +65,7 @@ del has_cython
 from .mesh import rectangle_domain, HPCDomain, DOF_TYPE_EXTERNAL, DOF_TYPE_INTERNAL
 from .linalg import Matrix, Vector, LinearSolver, solve
 from .polynomials import eval_phi
-from .assembly import assemble
-from .boundary_conditions import apply_bcs
+from .assembly import assemble, AssemblyMethod
+from .boundary_conditions import apply_bcs, BcType
 from .plotting import plot, interactive
 

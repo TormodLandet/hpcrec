@@ -1,7 +1,6 @@
-# encoding: utf8
-from __future__ import division
-import numpy
-from hpc import hpc_cython
+import numpy as np
+
+from hpcrec import hpc_cython, HPCDomain, HPCError
 
 
 # Harmonic polynomials defined as follows: C x^ex y^ey => (C, ex, ey)
@@ -38,8 +37,8 @@ HARMONIC_POLYNOMIALS_2D = (
 )
 
 
-def eval_phi(domain, dof, grad_grad=False):
-    """
+def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool=False):
+    r"""
     Calculate the interpolation coefficients for ϕ and its gradient ∇ϕ at a
     given dof.
     
@@ -76,7 +75,7 @@ def eval_phi(domain, dof, grad_grad=False):
     dof_neighbours = domain.dof_neighbours
     dof_coordinates = domain.dof_coordinates
     N = dof_neighbours.shape[1]
-    M = numpy.zeros((N, N), float)
+    M = np.zeros((N, N), float)
     
     if hpc_cython is not None:
         hpc_cython.setup_local_matrix(dof, dof_neighbours, dof_coordinates, M)
@@ -95,9 +94,10 @@ def eval_phi(domain, dof, grad_grad=False):
                 M[i,j] = fij
     
     try:
-        C = numpy.linalg.inv(M)
+        C = np.linalg.inv(M)
     except:
         debug_local_matrix_errors(domain, dof, M)
+        raise HPCError(f'Local matrix is not invertible for dof {dof} at {domain.dof_coordinates[dof]}')
     
     if not grad_grad:
         return dof_neighbours[dof], C[0,:], C[1,:], C[2,:]
@@ -111,41 +111,41 @@ def eval_phi(domain, dof, grad_grad=False):
 
 def debug_local_matrix_errors(domain, dof, M):
     coord = domain.dof_coordinates[dof]
-    print 'ERROR inverting local matrix for dof %d at %r' % (dof, coord)
+    print(f'ERROR inverting local matrix for dof {dof} at {coord}')
     
-    numpy.set_printoptions(linewidth=100000)
-    cond = numpy.linalg.cond(M)
+    np.set_printoptions(linewidth=100000)
+    cond = np.linalg.cond(M)
     neighbours = domain.dof_neighbours[dof]
     
-    print 'Matrix'
-    print M
-    print 'Number of neighbours', len(neighbours), M.shape
-    print neighbours
-    print 'Condition number: %15.5e' % cond
+    print('Matrix')
+    print(M)
+    print('Number of neighbours', len(neighbours), M.shape)
+    print(neighbours)
+    print('Condition number: %15.5e' % cond)
     
     x0, y0 = domain.dof_coordinates[dof]
     xn, yn = zip(*[domain.dof_coordinates[nb] for nb in neighbours])
     
-    from matplotlib import pyplot
+    from matplotlib import pyplot as plt
     
-    fig = pyplot.figure()
+    fig = plt.figure()
     fig.patch.set_facecolor('white')
     
-    pyplot.plot(xn, yn, 'xb', ms=12)
-    pyplot.plot(x0, y0, 'or', ms=12)
+    plt.plot(xn, yn, 'xb', ms=12)
+    plt.plot(x0, y0, 'or', ms=12)
     
     for i, nb in enumerate(neighbours):
         x, y = domain.dof_coordinates[nb]
-        pyplot.text(x, y, '%d' % (i+1,), fontsize=14, horizontalalignment='left', verticalalignment='bottom')
+        plt.text(x, y, '%d' % (i+1,), fontsize=14, horizontalalignment='left', verticalalignment='bottom')
     
-    pyplot.gca().set_aspect('equal')
-    for f in (pyplot.xlim, pyplot.ylim):
+    plt.gca().set_aspect('equal')
+    for f in (plt.xlim, plt.ylim):
         l, h = f()
         d = h-l
         l -= d*0.1
         h += d*0.1
         f(l, h)
     
-    #pyplot.title('DOF %d, cells %r' % (main_dof, [c.index for c in cells]))
-    pyplot.title('Condition number %15.5e' % cond)
-    pyplot.show()
+    #plt.title('DOF %d, cells %r' % (main_dof, [c.index for c in cells]))
+    plt.title('Condition number %15.5e' % cond)
+    plt.show()

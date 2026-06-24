@@ -1,5 +1,11 @@
-from hpc import parameters, HPCError
+from __future__ import annotations
+from typing import TypeAlias, Literal
+
 import numpy.linalg
+import numpy.typing
+
+from hpcrec import parameters, HPCError
+
 
 # Check for scipy
 try:
@@ -9,37 +15,48 @@ try:
 except ImportError:
     has_scipy = False
 
+
 # Check for PETSc
 try:
     import petsc4py
     petsc4py.init()
     from petsc4py import PETSc
     has_petsc = True
-except:
+except Exception:
     has_petsc = False
 
 
-def get_linalg_backend_type():
+ArrayLike: TypeAlias = numpy.ndarray | list[float] | list[list[float]] | numpy.typing.ArrayLike
+LinalgBackendType: TypeAlias = Literal['numpy', 'scipy', 'petsc']
+LINALG_BACKEND_OPTIONS = ('numpy', 'scipy', 'petsc', 'auto')
+
+
+def get_linalg_backend_type() -> LinalgBackendType:
     available_backends = ['numpy']
-    if has_scipy: available_backends.append('scipy')
-    if has_petsc: available_backends.append('petsc') 
-    
-    param_backend = parameters['linear_algebra_backend'] 
-    if param_backend != 'auto':
-        if not param_backend in available_backends:
-            raise HPCError('Linear algebra backend %r not available. Select one of %s.' % \
-                           (param_backend, ', '.join(repr(b) for b in available_backends)))
-        return param_backend 
-    
+    if has_scipy:
+        available_backends.append('scipy')
     if has_petsc:
-        return 'petsc'
-    elif has_scipy:
-        return 'scipy'
+        available_backends.append('petsc')
+    
+    param_backend = parameters['linear_algebra_backend']
+    if param_backend not in LINALG_BACKEND_OPTIONS:
+        raise HPCError(
+            f"Invalid linear algebra backend {param_backend!r}."
+            f" Select one of {', '.join(repr(b) for b in LINALG_BACKEND_OPTIONS)}."
+        )
+        
+    if param_backend == 'auto':
+        if has_petsc:
+            return 'petsc'
+        elif has_scipy:
+            return 'scipy'
+        else:
+            return 'numpy'
     else:
-        return 'numpy'
+        return param_backend
 
 
-def Matrix(N, M, data=None, indices=None, indptr=None):
+def Matrix(N: int, M: int, data: list[float] | None=None, indices: list[int] | None=None, indptr: list[int] | None=None) -> GenericMatrix:
     """
     Get a matrix of the selected backend type
     """
@@ -52,7 +69,7 @@ def Matrix(N, M, data=None, indices=None, indptr=None):
         return PetscMatrix(N, N, data, indices, indptr)
 
 
-def Vector(N):
+def Vector(N: int) -> GenericVector:
     """
     Get a vector of the selected backend type 
     """
@@ -63,7 +80,7 @@ def Vector(N):
         return NumpyVector(N)
 
 
-def LinearSolver(solver=None, preconditioner=None):
+def LinearSolver(solver: str | None=None, preconditioner: str | None=None) -> GenericLinearSolver:
     """
     Get a linear equation solver of the selected backend type
     """
@@ -76,20 +93,36 @@ def LinearSolver(solver=None, preconditioner=None):
         return PetscLinearSolver(solver, preconditioner)
 
 
-class GenericMatrix(object):
+class GenericMatrix:
     def __init__(self):
         raise NotImplementedError('You cannot instantiate a GenericMatrix')
     
     def finalize(self):
         pass
+    
+    def array(self) -> ArrayLike:
+        raise NotImplementedError('You cannot instantiate a GenericMatrix')
+    
+    @property
+    def csr_matrix(self) -> ArrayLike:
+        raise NotImplementedError('You cannot instantiate a GenericMatrix')
+    
+    @property
+    def csc_matrix(self) -> ArrayLike:
+        raise NotImplementedError('You cannot instantiate a GenericMatrix')
+    
+    def __setitem__(self, key: int | slice, value: float | ArrayLike):
+        raise NotImplementedError('You cannot instantiate a GenericMatrix')
+    
 
 
 class ScipyMatrix(GenericMatrix):
-    def __init__(self, N, M, data=None, indices=None, indptr=None):
+    def __init__(self, N: int, M: int, data: list[float] | None=None, indices: list[int] | None=None, indptr: list[int] | None=None):
         """
         A scipy.sparse CSR matrix
         """
         from scipy.sparse import csr_matrix
+
         self.shape = (N, M)
         
         if data is not None:
@@ -97,7 +130,7 @@ class ScipyMatrix(GenericMatrix):
         else:
             self._csr = csr_matrix(self.shape)
     
-    def array(self):
+    def array(self) -> ArrayLike:
         return self._csr.toarray()
     
     @property
@@ -120,7 +153,7 @@ class ScipyMatrix(GenericMatrix):
 
 
 class PetscMatrix(GenericMatrix):
-    def __init__(self, N, M, data=None, indices=None, indptr=None, nnz=9):
+    def __init__(self, N: int, M: int, data: list[float] | None=None, indices: list[int] | None=None, indptr: list[int] | None=None, nnz: int=9):
         """
         A sparse matrix using the PETSc library through petsc4py
         
@@ -139,7 +172,7 @@ class PetscMatrix(GenericMatrix):
     def from_csr(cls, data, indices, indptr, shape):
         N, M = shape
         
-        return mat
+        return cls(N, M, data, indices, indptr)
     
     def array(self):
         return self._mat.getValues(range(self.shape[0]), range(self.shape[1]))
@@ -160,7 +193,7 @@ class PetscMatrix(GenericMatrix):
 
 
 class NumpyMatrix(GenericMatrix):
-    def __init__(self, N, M, data=None, indices=None, indptr=None):
+    def __init__(self, N: int, M: int, data: list[float] | None=None, indices: list[int] | None=None, indptr: list[int] | None=None):
         """
         A dense matrix, fast construction and fast enough calculation for small problems
         """
@@ -168,6 +201,7 @@ class NumpyMatrix(GenericMatrix):
         self._data = numpy.zeros(self.shape, dtype=float)
         
         if data is not None:
+            assert indices is not None and indptr is not None
             for irow in range(N):
                 for j in range(indptr[irow], indptr[irow+1]):
                     self._data[irow, indices[j]] = data[j]
@@ -186,53 +220,76 @@ class NumpyMatrix(GenericMatrix):
         return '<NumpyMatrix %d by %d>' % self.shape
 
 
-class GenericVector(object):
+class GenericVector:
     def __init__(self):
         raise NotImplementedError('You cannot instantiate a GenericVector')
     
     def finalize(self):
         pass
 
+    def __getitem__(self, key: int | slice) -> float | ArrayLike:
+        raise NotImplementedError('You cannot instantiate a GenericVector')
+    
+    def __setitem__(self, key: int | slice, value: float | ArrayLike):
+        raise NotImplementedError('You cannot instantiate a GenericVector')
+    
+    def __len__(self) -> int:
+        raise NotImplementedError('You cannot instantiate a GenericVector')
 
-class NumpyVector(numpy.ndarray, GenericVector):
-    def __init__(self, N):
-        numpy.ndarray.__init__(self, N)
-        self[:] = 0
+    def array(self) -> ArrayLike:
+        raise NotImplementedError('You cannot instantiate a GenericVector')
+
+
+class NumpyVector(GenericVector):
+    def __init__(self, N: int):
+        self._data = numpy.zeros(N, dtype=float)
     
-    def array(self):
-        return self[:]
+    def array(self) -> ArrayLike:
+        return self._data
     
+    def __getitem__(self, key: int | slice) -> float | ArrayLike:
+        return self._data[key]
+    
+    def __setitem__(self, key: int | slice, value: float | ArrayLike):
+        self._data[key] = value
+
+    def __len__(self) -> int:
+        return len(self._data)
+
 
 class PetscVector(GenericVector):
-    def __init__(self, N):
+    def __init__(self, N: int):
         self._vec = PETSc.Vec().createSeq(N)
     
     def finalize(self):
         self._vec.assemblyBegin()
         self._vec.assemblyEnd()
     
-    def __getitem__(self, key):
+    def __getitem__(self, key: int | slice) -> float | ArrayLike:
         return self._vec.getValue(key)
     
-    def __setitem__(self, key, value):
+    def __setitem__(self, key: int | slice, value: float | ArrayLike):
         self._vec.setValue(key, value)
     
     def __len__(self):
         return self._vec.getSize()
     
-    def array(self):
+    def array(self) -> ArrayLike:
         return self._vec.getArray()
 
 
-class GenericLinearSolver(object):
+class GenericLinearSolver:
     def __init__(self, solver=None, preconditioner=None):
         self.solver = solver
-        self.preconditioner = None
+        self.preconditioner = preconditioner
         self.reuse_preconditioner = False
+
+    def solve(self, A: GenericMatrix, u: GenericVector, b: GenericVector) -> int:
+        raise NotImplementedError('You cannot instantiate a GenericLinearSolver')
 
 
 class ScipyLinearSolver(GenericLinearSolver):
-    def solve(self, A, u, b):
+    def solve(self, A: GenericMatrix, u: GenericVector, b: GenericVector) -> int:
         """
         Solve A u = b using SciPy sparse
         
@@ -248,20 +305,20 @@ class ScipyLinearSolver(GenericLinearSolver):
         tol = min(parameters['absolute_tolerance'], parameters['relative_tolerance'])
         
         if solver == 'gmres':
-            u[:], info = scipy.sparse.linalg.gmres(A.csr_matrix, b.array(), tol=tol)
+            u[:], info = scipy.sparse.linalg.gmres(A.csr_matrix, b.array(), rtol=tol)
             assert info == 0, 'Got scipy gmres error %d' % info
         elif solver == 'minres':
-            u[:], info = scipy.sparse.linalg.minres(A.csr_matrix, b.array(), tol=tol)
+            u[:], info = scipy.sparse.linalg.minres(A.csr_matrix, b.array(), rtol=tol)
             assert info == 0, 'Got scipy minres error %d' % info
         elif solver == 'bcgs':
-            u[:], info = scipy.sparse.linalg.bicgstab(A.csr_matrix, b.array(), tol=tol)
+            u[:], info = scipy.sparse.linalg.bicgstab(A.csr_matrix, b.array(), rtol=tol)
             assert info == 0, 'Got scipy bicgstab error %d' % info
         elif solver == 'spsolve':
             u[:] = scipy.sparse.linalg.spsolve(A.csr_matrix, b.array())
         elif solver == 'splu':
             if not self.reuse_preconditioner or not hasattr(self, 'lu'):
                 self.lu = scipy.sparse.linalg.splu(A.csc_matrix)
-            u[:] = self.lu.solve(b)
+            u[:] = self.lu.solve(b.array())
         else:
             raise HPCError('Unsupported SciPy solver %r' % solver)
         
@@ -269,10 +326,12 @@ class ScipyLinearSolver(GenericLinearSolver):
 
 
 class PetscLinearSolver(GenericLinearSolver):
-    def setup(self, A):
+    def setup(self, A: GenericMatrix):
         """
         Setup the solver
         """
+        assert isinstance(A, PetscMatrix)
+
         if hasattr(self, 'ksp'):
             # Already set up
             return
@@ -323,12 +382,16 @@ class PetscLinearSolver(GenericLinearSolver):
         self.ksp = ksp
         self.pc = pc
     
-    def solve(self, A, u, b):
+    def solve(self, A: GenericMatrix, u: GenericVector, b: GenericVector) -> int:
         """
         Solve A u = b using PETSc
         
         A must be a Matrix, u and b must be Vectors
         """
+        assert isinstance(A, PetscMatrix)
+        assert isinstance(u, PetscVector)
+        assert isinstance(b, PetscVector)
+
         if self.solver == 'hpc_richardson':
             return hpc_richardson(A, u, b)
         
@@ -355,7 +418,7 @@ class PetscLinearSolver(GenericLinearSolver):
 
 
 class NumpyLinearSolver(GenericLinearSolver):
-    def solve(self, A, u, b):
+    def solve(self, A: GenericMatrix, u: GenericVector, b: GenericVector) -> int:
         """
         Solve A u = b using numpy dense matrices
         
@@ -365,7 +428,7 @@ class NumpyLinearSolver(GenericLinearSolver):
         return 1
 
 
-def solve(A, u, b, *args):
+def solve(A: GenericMatrix, u: GenericVector, b: GenericVector, *args):
     """
     Solve A u = b
     
@@ -418,12 +481,15 @@ def get_petsc_convergence_reason(conv_code):
                 return attr
 
 
-def hpc_richardson(A, u, b, tol=1e-8, maxiter=1000):
+def hpc_richardson(A: PetscMatrix, u: PetscVector, b: PetscVector, tol: float = 1e-8, maxiter: int = 1000):
     """
     An extremely basic implementation of Richardson iterations for solving
     Au=b for PETSc matrices. Used for debugging only
     """
     assert isinstance(A, PetscMatrix)
+    assert isinstance(u, PetscVector)
+    assert isinstance(b, PetscVector)
+
     r = PetscVector(len(u))
     
     A = A._mat

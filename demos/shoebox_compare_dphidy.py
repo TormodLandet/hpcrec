@@ -1,16 +1,16 @@
 # encoding: utf8
 from __future__ import division
 import numpy
-import hpc
+import hpcrec
 from math import cosh, sinh, sin, cos, pi
 
 
 def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fem=0):
-    print 'Calculating shoebox with N=%d, L=%d' % (N, L)
+    print(f'Calculating shoebox with N={N}, L={L}')
     
     # Create geometry
-    with hpc.Timer('Geometry'):
-        domain = hpc.rectangle_domain((0, 0), (L, h), N*L//h, N)
+    with hpcrec.Timer('Geometry'):
+        domain = hpcrec.rectangle_domain((0, 0), (L, h), N*L//h, N)
     
     # Get layer dofs
     dofs_layer1 = get_dofs(domain.dof_coordinates, h)
@@ -36,7 +36,7 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fe
     dy3 = domain.dof_coordinates[dofs_layer3[0]][1] - domain.dof_coordinates[dofs_layer4[0]][1]
     
     # Assemble global system
-    with hpc.Timer('Assemble'):
+    with hpcrec.Timer('Assemble'):
         if fem > 0:
             A, b, solve = shoebox_demo_fem(domain, fem, k, h, dofs_layer1, neumann)
         else:
@@ -49,17 +49,17 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fe
         for row in A:
             nz = sum(1 if v != 0 else 0 for v in row)
             maxnz = max(maxnz, nz)
-        print 'Maximum number of non zeros in a row:', maxnz
+        print(f'Maximum number of non zeros in a row: {maxnz}')
         #print 'Condition number', numpy.linalg.cond(A)
     
     # Solve global system
-    with hpc.Timer('Solve'):
+    with hpcrec.Timer('Solve'):
         try:
             phi_h, d_phi_dy_h = solve()
         except Exception as e:
-            print 'ERROR:'
-            print e
-            print 'The global system matrix cannot be inverted!'
+            print('ERROR:')
+            print(e)
+            print('The global system matrix cannot be inverted!')
             exit()
     assert d_phi_dy_h.shape == dofs_layer1.shape
     
@@ -104,11 +104,11 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fe
                          2*dy1*dy2**2 + 3*dy1*dy2*dy3 + dy1*dy3**2 + dy2**3 + 2*dy2**2*dy3 + dy2*dy3**2))
     
     # Print the errors
-    print 'Error phi          : %15.8e' % numpy.linalg.norm(phi_h - phi_a)
-    print 'Error d_phi_dy     : %15.8e' % numpy.linalg.norm(d_phi_dy_h - d_phi_dy_a)
-    print 'Error d_phi_dy FDM1: %15.8e' % numpy.linalg.norm(d_phi_dy_fdm1 - d_phi_dy_a)
-    print 'Error d_phi_dy FDM2: %15.8e' % numpy.linalg.norm(d_phi_dy_fdm2 - d_phi_dy_a)
-    print 'Error d_phi_dy FDM3: %15.8e' % numpy.linalg.norm(d_phi_dy_fdm3 - d_phi_dy_a)
+    print(f'Error phi          : {numpy.linalg.norm(phi_h - phi_a):15.8e}')
+    print(f'Error d_phi_dy     : {numpy.linalg.norm(d_phi_dy_h - d_phi_dy_a):15.8e}')
+    print(f'Error d_phi_dy FDM1: {numpy.linalg.norm(d_phi_dy_fdm1 - d_phi_dy_a):15.8e}')
+    print(f'Error d_phi_dy FDM2: {numpy.linalg.norm(d_phi_dy_fdm2 - d_phi_dy_a):15.8e}')
+    print(f'Error d_phi_dy FDM3: {numpy.linalg.norm(d_phi_dy_fdm3 - d_phi_dy_a):15.8e}')
     
     if False:
         from matplotlib import pyplot
@@ -121,11 +121,11 @@ def shoebox_demo(N, L, h=1, k=1, show_plot=True, neumann=False, refine_y=0.0, fe
         pyplot.show()
     
     if show_plot:
-        from matplotlib import pyplot
-        pyplot.spy(A)
-        hpc.plot(domain)
-        hpc.plot(domain, phi_h)
-        pyplot.show()
+        from matplotlib import pyplot as plt
+        plt.spy(A)
+        hpcrec.plot(domain)
+        hpcrec.plot(domain, phi_h)
+        plt.show()
 
 
 def shoebox_demo_hpc(domain, L, k, h, dofs_layer1, neumann=False):
@@ -136,7 +136,7 @@ def shoebox_demo_hpc(domain, L, k, h, dofs_layer1, neumann=False):
     bcs = []
     dirichlet_dofs = []
     for dof, coord in enumerate(domain.dof_coordinates): 
-        if domain.dof_type[dof] == hpc.DOF_TYPE_EXTERNAL:
+        if domain.dof_type[dof] == hpcrec.DOF_TYPE_EXTERNAL:
             x, y = coord
             if not neumann:
                 bcs.append(('D',  dof,   cosh(k*(y+h))*sin(k*x)))
@@ -154,32 +154,32 @@ def shoebox_demo_hpc(domain, L, k, h, dofs_layer1, neumann=False):
                     bcs.append(('Ny', dof, k*sinh(k*(y+h))*sin(k*x)))
     
     # Setup global equation system
-    A, b = hpc.assemble(domain)
-    hpc.apply_bcs(domain, A, b, bcs)
-    print 'Number of unknowns: %d' % len(b)
+    A, b = hpcrec.assemble(domain)
+    hpcrec.apply_bcs(domain, A, b, bcs)
+    print(f'Number of unknowns: {len(b)}')
     
     if False:
-        print 'Global system matrix'
-        print '   ', ' '.join('%8d' % i for i in range(A.shape[0]))
+        print('Global system matrix')
+        print('   ', ' '.join(f'{i:8d}' for i in range(A.shape[0])))
         for i, row in enumerate(A):
-            print '%3d' % i,
+            print(f'{i:3d}', end=' ')
             for v in row:
-                print '%8.2g' % v,
-            print
+                print(f'{v:8.2g}', end=' ')
+            print()
         
-        print 'DOF coordinates'
+        print('DOF coordinates')
         for i, c in enumerate(domain.dof_coordinates):
-            print '%3d - %8.2g %8.2g' % (i, c[0], c[1])
+            print(f'{i:3d} - {c[0]:8.2g} {c[1]:8.2g}')
     
     def solve():
-        phi_h = hpc.Vector(len(b))
-        nit = hpc.solve(A, phi_h, b)
-        print 'Done in %d iterations' % nit
+        phi_h = hpcrec.Vector(len(b))
+        nit = hpcrec.solve(A, phi_h, b)
+        print(f'Done in {nit} iterations')
         
         # Find the derivative at the free surface
         d_phi_dy_h = numpy.zeros(len(dofs_layer1), float)
         for i, dof in enumerate(dofs_layer1):
-            neighbours, _coeffs, _coeffs_diffx, coeffs_diffy = hpc.eval_phi(domain, dof)
+            neighbours, _coeffs, _coeffs_diffx, coeffs_diffy = hpcrec.eval_phi(domain, dof)
             for j, dof_j in enumerate(neighbours):
                 d_phi_dy_h[i] += coeffs_diffy[j]*phi_h[dof_j]
         
@@ -193,9 +193,12 @@ def shoebox_demo_hpc(domain, L, k, h, dofs_layer1, neumann=False):
 def shoebox_demo_fem(domain, order, k, h, dofs_layer1, neumann=False):
     """
     Solve the shoebox wave problem using FEM (FEniCS)
+
+    NOTE: this requires an ancient version of FEniCS (this code is from 2016!)
     """
     import dolfin as df
     from dolfin import grad, dot, dx, ds
+
     mesh = domain.to_fenics()
     V = df.FunctionSpace(mesh, 'CG', order)
     u = df.TrialFunction(V)
@@ -213,7 +216,7 @@ def shoebox_demo_fem(domain, order, k, h, dofs_layer1, neumann=False):
     L = dot(gn, n)*v*ds
     A = df.assemble(a)
     b = df.assemble(L)
-    print 'Number of unknowns: %d' % len(b)
+    print(f'Number of unknowns: {len(b)}')
     
     # Apply Dirichlet boundary condition
     def dirichlet_boundary(x, on_boundary):
@@ -227,7 +230,7 @@ def shoebox_demo_fem(domain, order, k, h, dofs_layer1, neumann=False):
     def solve():
         q = df.Function(V)
         nit = df.solve(A, q.vector(), b)
-        print 'Done in %d iterations' % nit
+        print(f'Done in {nit} iterations')
         phi_h = q.compute_vertex_values()
         
         # Find the derivative at the free surface
@@ -283,11 +286,11 @@ if __name__ == '__main__':
     
     args = parser.parse_args()
     
-    hpc.parameters['linear_algebra_backend'] = args.backend
-    if args.solver: hpc.parameters['solver'] = args.solver
-    if args.preconditioner: hpc.parameters['preconditioner'] = args.preconditioner
+    hpcrec.parameters['linear_algebra_backend'] = args.backend
+    if args.solver: hpcrec.parameters['solver'] = args.solver
+    if args.preconditioner: hpcrec.parameters['preconditioner'] = args.preconditioner
     
-    with hpc.Timer('Shoebox demo'):
+    with hpcrec.Timer('Shoebox demo'):
         try:
             shoebox_demo(N=args.N,
                          L=args.L,
@@ -295,7 +298,7 @@ if __name__ == '__main__':
                          neumann=args.neumann,
                          refine_y=args.refine_y,
                          fem=args.fem)
-        except hpc.HPCError as e:
-            print 'ERROR - '*9 + 'ERROR!!!\n'
-            print '   ', e 
-            print '\n' + 'ERROR - '*9 + 'ERROR!!!'
+        except hpcrec.HPCError as e:
+            print('ERROR - '*9 + 'ERROR!!!\n')
+            print('   ', e)
+            print('\n' + 'ERROR - '*9 + 'ERROR!!!')
