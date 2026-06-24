@@ -132,7 +132,20 @@ def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool = False):
     N = dof_neighbours.shape[1]
     M = np.zeros((N, N), float)
 
-    if hpc_cython is not None:
+    # For periodic-x domains the modular stencil wraps column Nx-1 as the left
+    # neighbour of column 0 (and vice versa).  The stored x-coordinate of the
+    # wrapped neighbour is on the far side of the domain (x ≈ L-dx instead of
+    # -dx).  We fix this by folding the relative x back into (-L/2, L/2] before
+    # building the local polynomial matrix.  The Cython path does not support
+    # this wrapping, so we fall through to the Python path for periodic domains.
+    x_period: float | None = None
+    if domain.periodic_x and domain.grid_shape is not None:
+        Nx_g, Ny_g = domain.grid_shape
+        # dx = x-spacing between the first two columns
+        dx_g = float(dof_coordinates[Ny_g + 1, 0] - dof_coordinates[0, 0])
+        x_period = Nx_g * dx_g
+
+    if hpc_cython is not None and x_period is None:
         hpc_cython.setup_local_matrix(dof, dof_neighbours, dof_coordinates, M)
     else:
         x0, y0 = dof_coordinates[dof]
@@ -141,6 +154,12 @@ def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool = False):
             x, y = dof_coordinates[dof_i]
             xr = x - x0
             yr = y - y0
+            if x_period is not None:
+                # Fold xr into (-L/2, L/2] for the wrapped periodic neighbour
+                if xr > x_period / 2:
+                    xr -= x_period
+                elif xr < -x_period / 2:
+                    xr += x_period
 
             for j, poly in enumerate(HARMONIC_POLYNOMIALS_2D[:N]):
                 fij = 0
@@ -150,11 +169,11 @@ def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool = False):
 
     try:
         C = np.linalg.inv(M)
-    except:
+    except Exception as e:
         debug_local_matrix_errors(domain, dof, M)
         raise HPCError(
             f"Local matrix is not invertible for dof {dof} at {domain.dof_coordinates[dof]}"
-        )
+        ) from e
 
     if not grad_grad:
         return dof_neighbours[dof], C[0, :], C[1, :], C[2, :]

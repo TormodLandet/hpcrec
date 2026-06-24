@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import TypeAlias, Literal
 
+import numpy as np
 import numpy.linalg
 import numpy.typing
 
@@ -111,7 +112,7 @@ class GenericMatrix:
     def finalize(self):
         pass
 
-    def array(self) -> ArrayLike:
+    def array(self) -> np.ndarray:
         raise NotImplementedError("You cannot instantiate a GenericMatrix")
 
     @property
@@ -147,7 +148,7 @@ class ScipyMatrix(GenericMatrix):
         else:
             self._csr = csr_matrix(self.shape)
 
-    def array(self) -> ArrayLike:
+    def array(self) -> np.ndarray:
         return self._csr.toarray()
 
     @property
@@ -267,7 +268,7 @@ class GenericVector:
     def __len__(self) -> int:
         raise NotImplementedError("You cannot instantiate a GenericVector")
 
-    def array(self) -> ArrayLike:
+    def array(self) -> np.ndarray:
         raise NotImplementedError("You cannot instantiate a GenericVector")
 
 
@@ -275,7 +276,7 @@ class NumpyVector(GenericVector):
     def __init__(self, N: int):
         self._data = numpy.zeros(N, dtype=float)
 
-    def array(self) -> ArrayLike:
+    def array(self) -> np.ndarray:
         return self._data
 
     def __getitem__(self, key: int | slice) -> float | ArrayLike:
@@ -305,7 +306,7 @@ class PetscVector(GenericVector):
     def __len__(self):
         return self._vec.getSize()
 
-    def array(self) -> ArrayLike:
+    def array(self) -> np.ndarray:
         return self._vec.getArray()
 
 
@@ -482,7 +483,7 @@ class PetscOptions(object):
     def __enter__(self):
         if self.options:
             self.orig_options = PETSc.Options().getAll()
-            for key, value in self.options.iteritems():
+            for key, value in self.options.items():
                 PETSc.Options().setValue(key, value)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
