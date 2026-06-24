@@ -42,6 +42,32 @@ class HPCDomain:
         # For plotting and FEniCS conversion
         self.triangles: list[tuple[int, int, int]] = triangles
 
+    def column_dofs(self, i: int | None = None, x: float | None = None) -> list[int]:
+        """
+        Return the DOF indices for a vertical column in the domain.
+
+        Parameters
+        ----------
+        i:
+            Column index (0 <= i < Nx).  If *None*, ``x`` must be provided.
+        x:
+            x-coordinate of the column.  If *None*, ``i`` must be provided.
+        """
+        if self.grid_shape is None:
+            raise ValueError("Cannot get column DOFs for a domain without regular grid_shape set")
+        Nx, Nz = self.grid_shape
+
+        # Get the column index from the x-coordinate if needed
+        if i is None:
+            assert x is not None, "Either column index 'i' or x-coordinate 'x' must be provided."
+            # Assume the x-coordinate is the same for all z-levels in the column
+            # These are the bottom row x-coordinates:
+            x_coords = self.dof_coordinates[0 : Nx * (Nz + 1) : Nz + 1, 0]
+            i = np.argmin(np.abs(x_coords - x)).item()
+        
+        column_dofs = [i * (Nz + 1) + j for j in range(Nz + 1)]
+        return column_dofs
+
     def to_fenics(self):
         """
         Return a FEniCS mesh for this domain
@@ -50,7 +76,10 @@ class HPCDomain:
 
 
 def rectangle_domain(
-    p0: tuple[float, float], p1: tuple[float, float], Nx: int, Ny: int,
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    Nx: int,
+    Ny: int,
     periodic_in_x: bool = False,
 ) -> HPCDomain:
     """
@@ -81,6 +110,8 @@ def rectangle_domain(
         dof_type=np.zeros(Nv, int),
         dof_neighbours=np.zeros((Nv, 8), int),
         triangles=[],
+        periodic_x=False,
+        grid_shape=(Nx, Ny),
     )
 
     for i, x in enumerate(xv):
@@ -196,27 +227,29 @@ def _rectangle_domain_periodic_x(
 
             # 3×3 stencil centred at (i, cj) with modular x-wrapping
             d1 = il * (Ny + 1) + cj + 1
-            d2 = i  * (Ny + 1) + cj + 1
+            d2 = i * (Ny + 1) + cj + 1
             d3 = ir * (Ny + 1) + cj + 1
             d4 = il * (Ny + 1) + cj
             d5 = ir * (Ny + 1) + cj
             d6 = il * (Ny + 1) + cj - 1
-            d7 = i  * (Ny + 1) + cj - 1
+            d7 = i * (Ny + 1) + cj - 1
             d8 = ir * (Ny + 1) + cj - 1
-            d9 = i  * (Ny + 1) + cj  # centre of stencil cell
+            d9 = i * (Ny + 1) + cj  # centre of stencil cell
 
             dof = i * (Ny + 1) + j
             neighbours = [d1, d2, d3, d4, d5, d6, d7, d8, d9]
             neighbours.remove(dof)
             domain.dof_neighbours[dof, :] = neighbours
 
-            # Triangulation (last column wraps back to first for plotting)
-            if j < Ny:
-                i_next = (i + 1) % Nx
-                d1t = i      * (Ny + 1) + j
-                d2t = i      * (Ny + 1) + j + 1
-                d3t = i_next * (Ny + 1) + j + 1
-                d4t = i_next * (Ny + 1) + j
+            # Triangulation: drop the last column so that the plot is not messed up
+            # matplotlib's triplot/tripcolor will not handle the periodic seam correctly!
+            # Alternatively we could add duplicate values for the right-edge column when
+            # creating the triangulation values to plot in matplotlib ...
+            if i < Nx - 1 and j < Ny:
+                d1t = (i + 0) * (Ny + 1) + j + 0
+                d2t = (i + 0) * (Ny + 1) + j + 1
+                d3t = (i + 1) * (Ny + 1) + j + 1
+                d4t = (i + 1) * (Ny + 1) + j + 0
                 domain.triangles.append((d1t, d2t, d3t))
                 domain.triangles.append((d1t, d3t, d4t))
 

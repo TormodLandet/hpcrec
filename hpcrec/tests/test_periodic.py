@@ -18,7 +18,7 @@ from math import cosh, sin, pi
 import numpy as np
 import pytest
 
-from hpcrec.test_cases.wave_kinematics import create_wave_domain, solve_wave_kinematics
+from hpcrec.test_cases.wave_kinematics import FreeSurfaceConformingDomain, solve_wave_kinematics
 
 
 @pytest.mark.parametrize("Nx", [16, 32])
@@ -34,7 +34,7 @@ def test_periodic_manufactured_solution(Nx: int, Nz: int):
     # Flat free surface (eta = 0) so top is at z = 0
     eta = np.zeros(Nx)
 
-    domain = create_wave_domain(depth, x, eta, Nz=Nz)
+    domain = FreeSurfaceConformingDomain(L, depth, eta, Nz=Nz)
 
     # Top Dirichlet values: phi(x, 0) = cosh(k * depth) * sin(kx)
     psi = np.array([cosh(k * depth) * sin(k * xi) for xi in x])

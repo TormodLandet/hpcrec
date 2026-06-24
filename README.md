@@ -26,6 +26,13 @@ is only applied for numpy and scipy and the main author has no need for a multi-
 PETSc right now.
 
 
+## Usage
+
+A usage example for reconstructing the wave kinematics below a known free surface with a known
+free-surface velocity potential, both computed by the Higher Order Spectral Method, HOSM, can be
+seen in [this notebook](demos/wamod_h5_reconstruction.ipynb).  
+
+
 ## Developing
 
 The unit tests can be run using [uv](https://docs.astral.sh/uv/), just call

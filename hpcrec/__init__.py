@@ -2,8 +2,16 @@
 This is an implementation of the Harmonic Polynomial Cell method by
 Shao & Faltinsen
 
-(c) 2016 - Tormod Landet, original Python 2.7 implementation
-(c) 2024 - Tormod Landet, updated to Python 3.14
+The "hpcrec" Python package solves for the Laplacian velocity potential using the Harmonic
+Polynomial Cell method. It is currently being used mostly for wave kinematics reconstruction with a
+known free surface location with associated free surface potential, but you can also implement a
+general HPC solver for other problems and even create a numerical wave tank with a moving free
+surface by implementing a time-stepping scheme and the appropriate free-surface boundary conditions.
+
+The hpcrec package is available on GitHub: https://github.com/TormodLandet/hpcrec
+
+(c) 2016 - Tormod Landet, original Python 2.7 implementation as a general-purpose HPC solver
+(c) 2026 - Tormod Landet, updated to Python 3.12+, focused on HPC wave kinematics reconstruction
 """
 
 # Version of the package
