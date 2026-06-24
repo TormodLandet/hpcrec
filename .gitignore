@@ -1,8 +1,9 @@
 *.pyc
+__pycache__
 .project
 .pydevproject
 .settings
-README.html
+*.html
 *.msh
 *.xml
 *.out

@@ -9,6 +9,7 @@ Shao & Faltinsen
 # Version of the package
 __version__ = "2026.06.24"
 
+
 # Exception
 class HPCError(Exception):
     pass
@@ -17,36 +18,38 @@ class HPCError(Exception):
 # Global configuration ala FEniCS
 parameters = {
     # numpy, scipy, petsc or auto (which is numpy for small matrices)
-    'linear_algebra_backend': 'auto',
-    
+    "linear_algebra_backend": "auto",
     # Iterative KSP solver parameters
-    'relative_tolerance': 1e-15,
-    'absolute_tolerance': 1e-15,
-    'divergence_limit': 10000,
-    'max_iterations': 10000,
-    'solver': 'gmres',
-    'preconditioner': 'bjacobi'
+    "relative_tolerance": 1e-15,
+    "absolute_tolerance": 1e-15,
+    "divergence_limit": 10000,
+    "max_iterations": 10000,
+    "solver": "gmres",
+    "preconditioner": "bjacobi",
 }
 
 
 # Timing utilities
 import time
+
+
 class Timer(object):
     def __init__(self, task):
         self.task = task
-    
+
     def __enter__(self):
-        print(f'STARTING {self.task}')
+        print(f"STARTING {self.task}")
         self.t_start = time.time()
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         t = time.time() - self.t_start
-        print(f'DONE with {self.task} in {t:.4f} seconds')
+        print(f"DONE with {self.task} in {t:.4f} seconds")
 
 
 # Optional Cython module
 try:
     import pyximport
+
     pyximport.install()
     del pyximport
     has_cython = True
@@ -68,4 +71,3 @@ from .polynomials import eval_phi
 from .assembly import assemble, AssemblyMethod
 from .boundary_conditions import apply_bcs, BcType
 from .plotting import plot, interactive
-
