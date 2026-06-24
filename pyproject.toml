@@ -48,11 +48,15 @@ dev = [
     "ipykernel >= 6.0",
     "ruff >= 0.15",
 ]
+demos = [
+    # Dependencies for running some of the the demos
+    "h5py >= 3.0",
+]
 
 [tool.uv]
 # These groups are included by uv by default (for developers)
-# You can use uv overrides --no-group=test or --only-group=docs etc
-default-groups = ["test", "dev"]
+# You can use uv overrides --no-group=test or --only-group=test etc
+default-groups = ["test", "dev", "demos"]
 
 [tool.black]
 line-length = 100

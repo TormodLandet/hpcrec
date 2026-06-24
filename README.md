@@ -4,19 +4,48 @@ This Python code implements the HPC method by
 [Shao and Faltinsen](https://scholar.google.com/scholar?q=Yan-Lin+shao+Odd+faltinsen+harmonic).
 
 The Python package for structured-quad-mesh HPC was written in 2016 based on an earlier failed
-unstructured-mesh triangle implementation. It was ported to Python 3.12 in 2026 and renamed hpcrec
-since the revival was based on a need for a fast and accurate method to reconstruct the velocity
-field below a known wave elevation in 2D with a known potential at the free surface.
-
-The code also contains an *old* interface with FEniCS to benchmark the HPC method's harmonic
-polynomial interpolation vs the more standard continuous Galerkin FEM method with Lagrange
-polynomials. That code is not maintained and is not compatible with the latest FEniCSx versions. 
+unstructured-mesh triangle implementation. It was ported to Python 3.12 in 2026 and renamed from 
+"hpc" to  **hpcrec** since the revival was based on a need for a fast and accurate method to
+**reconstruct** the velocity field below a known wave elevation in 2D with a known potential at the
+free surface. Any other features are probably not going to be maintained. 
 
 For sparse linear algebra either PETSc (petsc4py) or SciPy (scipy.sparse) can be used.
 On a single processor MUMPS through PETSc and SuperLU through SciPy perform about the same.
 For small problems where dense matrices are ok numpy can be used as well.
 The assembly of local interpolation matrices is implemented in Cython for speed (optional!), the
 rest of the code is pure Python (originally v 2.7, ported to 3.12 in 2026).
+
+**NOTE 1:**
+The code also contains an *old* interface with FEniCS to benchmark the HPC method's harmonic
+polynomial interpolation vs the more standard continuous Galerkin FEM method with Lagrange
+polynomials. That code is not maintained and is not compatible with the latest FEniCSx versions. 
+
+**NOTE 2:**
+The PETSc (petsc4py) interface in the code has not been tested since 2016 ... The automated testing
+is only applied for numpy and scipy and the main author has no need for a multi-CPU solver using
+PETSc right now.
+
+
+## Developing
+
+The unit tests can be run using [uv](https://docs.astral.sh/uv/), just call
+```bash
+uv run pytest -v
+```
+in the repository root. 
+
+
+## About *hpcrec*
+
+The *hpcrec* Python code is developed by Tormod Landet.
+
+Issues and pull requests are welcome, but beware that it may be *months* or *years* between each
+time I can (or want to) set aside time for maintenance, so do not expect quick replies or regular
+updates!
+There is a gap of 10 years between two commits in the repo, so I guess that says something about the
+speed of development... There is a high chance the repo will never be updated again if I find that
+FEM reconstruction or some other method is a faster and simpler way to get what I need
+(for work @ DNV).
 
 
 ## The HPC method
