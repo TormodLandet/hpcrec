@@ -111,21 +111,87 @@ class HpcCache:
         Calling this when the cache is already valid will recompute and
         refresh all cached data (equivalent to invalidate + repopulate).
         """
+        if self.domain.dof_neighbours.shape[1] == 8:
+            self._populate_vectorized()
+        else:
+            # Fallback for non-standard stencil sizes (rare)
+            self._populate_loop()
+
+    def _populate_vectorized(self) -> None:
+        """
+        Fast vectorized populate: build all local matrices and batch-invert
+        in a single NumPy call.  No Python loop over DOFs.
+        """
+        domain = self.domain
+        coords = domain.dof_coordinates  # (N, 2)
+        nb = domain.dof_neighbours  # (N, 8)
+        N, n_nb = nb.shape
+
+        # Gather neighbour coordinates; compute relative offsets (N, 8)
+        nb_coords = coords[nb]  # (N, 8, 2) – fancy index
+        xr = nb_coords[:, :, 0] - coords[:, 0:1]  # (N, 8)
+        yr = nb_coords[:, :, 1] - coords[:, 1:2]  # (N, 8)
+
+        # Fold the periodic-x seam: xr → (-L/2, L/2]
+        # Matches the per-DOF logic in eval_phi exactly.
+        if domain.periodic_x and domain.grid_shape is not None:
+            Nx_g, Ny_g = domain.grid_shape
+            dx_g = float(coords[Ny_g + 1, 0] - coords[0, 0])
+            x_period = Nx_g * dx_g
+            half = x_period * 0.5
+            xr = np.where(xr > half, xr - x_period, np.where(xr < -half, xr + x_period, xr))
+
+        # Build local polynomial matrix M[i, j, k] = poly_k(xr[i,j], yr[i,j])
+        # shape (N, 8, 8):  i = DOF index, j = neighbour index, k = polynomial
+        # First 8 harmonic polynomials (matching HARMONIC_POLYNOMIALS_2D[:8]):
+        x2, y2 = xr * xr, yr * yr
+        M = np.stack(
+            [
+                np.ones((N, n_nb), dtype=np.float64),  # f1 = 1
+                xr,  # f2 = x
+                yr,  # f3 = y
+                x2 - y2,  # f4 = x² − y²
+                2.0 * xr * yr,  # f5 = 2xy
+                xr * (x2 - 3.0 * y2),  # f6 = x³ − 3xy²
+                yr * (3.0 * x2 - y2),  # f7 = 3x²y − y³
+                x2 * x2 - 6.0 * x2 * y2 + y2 * y2,  # f8 = x⁴ − 6x²y² + y⁴
+            ],
+            axis=2,
+        )  # (N, 8, 8)
+
+        # Batch matrix inversion: numpy inverts the last two dimensions.
+        # C[i] = inv(M[i]); row k of C[i] gives weights so that
+        #   value at origin  = C[i, 0, :] · phi[neighbours]
+        #   dphi/dx at origin = C[i, 1, :] · phi[neighbours]
+        #   dphi/dy at origin = C[i, 2, :] · phi[neighbours]
+        C = np.linalg.inv(M)  # (N, 8, 8)
+
+        self.neighbours = nb.copy()
+        self.coeffs = np.ascontiguousarray(C[:, 0, :])  # phi interpolation
+        self.cx = np.ascontiguousarray(C[:, 1, :])  # ∂phi/∂x
+        self.cy = np.ascontiguousarray(C[:, 2, :])  # ∂phi/∂y
+        self._valid = True
+
+    def _populate_loop(self) -> None:
+        """
+        Fallback populate via per-DOF eval_phi calls (handles non-8-neighbour
+        stencils and serves as a reference implementation).
+        """
         # Late import to break the potential circular import chain:
         #   mesh.py → cache.py → polynomials.py → hpcrec/__init__ → mesh.py
-        # At the time populate() is first called all modules are fully loaded,
-        # so the lazy import resolves correctly.
         from .polynomials import eval_phi
 
-        N = len(self.domain.dof_coordinates)
-        neighbours = np.empty((N, 8), dtype=self.domain.dof_neighbours.dtype)
-        coeffs = np.empty((N, 8), dtype=np.float64)
-        cx = np.empty((N, 8), dtype=np.float64)
-        cy = np.empty((N, 8), dtype=np.float64)
+        domain = self.domain
+        N = len(domain.dof_coordinates)
+        n_nb = domain.dof_neighbours.shape[1]
+        neighbours = np.empty((N, n_nb), dtype=domain.dof_neighbours.dtype)
+        coeffs = np.empty((N, n_nb), dtype=np.float64)
+        cx = np.empty((N, n_nb), dtype=np.float64)
+        cy = np.empty((N, n_nb), dtype=np.float64)
 
         for dof in range(N):
-            nb, c, gx, gy = eval_phi(self.domain, dof)
-            neighbours[dof] = nb
+            nb_, c, gx, gy = eval_phi(domain, dof)
+            neighbours[dof] = nb_
             coeffs[dof] = c
             cx[dof] = gx
             cy[dof] = gy
