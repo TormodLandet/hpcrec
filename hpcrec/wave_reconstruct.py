@@ -1,3 +1,4 @@
+from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING
 
@@ -183,7 +184,7 @@ class HpcWaveKinematics:
         return u_rotated, w_rotated
 
 
-def reconstruct_wave_kinematics_using_hpc(
+def reconstruct_wave_kinematics(
     length: float,
     depth: float,
     eta: np.ndarray,
