@@ -130,6 +130,12 @@ class HpcWaveKinematics:
         triangles = self.triangulated_domain.triangles
 
         if mirror_twice:
+            # Original coords
+            x_min = np.min(x)  # Should be 0.0
+            x_max = np.max(x)  # Should be length - dx
+
+            # Add one triangulation on each side of the original triangulation to make it easier to
+            # plot near the periodic boundaries.
             Ncoord = len(x)
             x = np.concatenate([x - self.length, x, x + self.length])
             z = np.concatenate([z, z, z])
@@ -140,6 +146,41 @@ class HpcWaveKinematics:
                     triangles + 2 * Ncoord,
                 ]
             )
+
+            # The original triangulation does not include dofs/coords at the last vertical column,
+            # at x=L since these are the same as the ones at x=0. We connect the three
+            # triangulations here with two columns of triangles, one at x=[x_min - dx, x_min] and
+            # one at x=[x_max, x_max + dx].
+            dx = self.length - x_max
+            xeps = dx / 10.0  # Small tolerance to avoid floating-point issues
+
+            # Find boundary column nodes in original triangulation, sorted by z
+            x_orig = self.triangulated_domain.x
+            z_orig = self.triangulated_domain.y
+            idx_at_xmin = np.where(np.isclose(x_orig, x_min, atol=xeps))[0]
+            idx_at_xmax = np.where(np.isclose(x_orig, x_max, atol=xeps))[0]
+            left_orig = idx_at_xmin[np.argsort(z_orig[idx_at_xmin])]
+            right_orig = idx_at_xmax[np.argsort(z_orig[idx_at_xmax])]
+
+            # Gap 1: left copy right boundary (right_orig) -> middle copy left boundary (left_orig + Ncoord)
+            col_left_1 = right_orig
+            col_right_1 = left_orig + Ncoord
+
+            # Gap 2: middle copy right boundary (right_orig + Ncoord) -> right copy left boundary (left_orig + 2*Ncoord)
+            col_left_2 = right_orig + Ncoord
+            col_right_2 = left_orig + 2 * Ncoord
+
+            # Build 2*Nz triangles per gap by splitting each quad into two triangles (vectorized)
+            j = np.arange(len(left_orig) - 1)
+            connecting_triangles = np.concatenate(
+                [
+                    np.stack([col_left_1[j], col_right_1[j], col_right_1[j + 1]], axis=1),
+                    np.stack([col_left_1[j], col_right_1[j + 1], col_left_1[j + 1]], axis=1),
+                    np.stack([col_left_2[j], col_right_2[j], col_right_2[j + 1]], axis=1),
+                    np.stack([col_left_2[j], col_right_2[j + 1], col_left_2[j + 1]], axis=1),
+                ]
+            )
+            triangles = np.concatenate([triangles, connecting_triangles])
 
         # Apply rotation and translation to the triangulated_domain coordinates
         # (Only makes sense for beta=0 and beta=180)
