@@ -1,8 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, TypeAlias, Literal
 
-from .polynomials import eval_phi
-
 if TYPE_CHECKING:
     from .mesh import HPCDomain
     from .linalg import GenericMatrix, GenericVector
@@ -16,7 +14,11 @@ def apply_bcs(domain: HPCDomain, A: GenericMatrix, b: GenericVector, bcs: list[B
     """
     Apply boundary conditions
     """
-    # Apply BCs
+    # Stencil data is fetched lazily from the cache on the first Neumann BC.
+    # If assemble() has already been called the cache is already warm and this
+    # is just a dict-lookup; otherwise it triggers a full cache population.
+    _cache_data: tuple | None = None
+
     seen_dofs = set()
     for bc_type, dof, value in bcs:
         # Make sure we only have one BC per dof
@@ -30,12 +32,19 @@ def apply_bcs(domain: HPCDomain, A: GenericMatrix, b: GenericVector, bcs: list[B
             b[dof] = value
             continue
 
-        neighbours, _coeffs, coeffs_diffx, coeffs_diffy = eval_phi(domain, dof)
+        # Neumann BC: need derivative coefficients from the cache.
+        if _cache_data is None:
+            nb_all, _, cx_all, cy_all = domain.cache.get_all()
+            _cache_data = (nb_all, cx_all, cy_all)
+        else:
+            nb_all, cx_all, cy_all = _cache_data
+
+        neighbours = nb_all[dof]
 
         if bc_type == "Nx":
-            coeffs_diff = coeffs_diffx
+            coeffs_diff = cx_all[dof]
         elif bc_type == "Ny":
-            coeffs_diff = coeffs_diffy
+            coeffs_diff = cy_all[dof]
         else:
             raise NotImplementedError("BC type %r not implemented" % bc_type)
 

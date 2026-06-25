@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .cache import HpcCache
+
 
 DOF_TYPE_INTERNAL = 0
 DOF_TYPE_EXTERNAL = 1
@@ -42,6 +44,12 @@ class HPCDomain:
         # For plotting and FEniCS conversion
         self.triangles: list[tuple[int, int, int]] = triangles
 
+        # Lazy cache of per-DOF stencil coefficients.  Populated on first use
+        # by assembly, apply_bcs, or compute_velocity.  Must be invalidated
+        # if dof_coordinates or dof_neighbours are modified in-place after
+        # construction (see hpcrec/cache.py for full details).
+        self.cache: HpcCache = HpcCache(self)
+
     def column_dofs(self, i: int | None = None, x: float | None = None) -> list[int]:
         """
         Return the DOF indices for a vertical column in the domain.
@@ -64,7 +72,7 @@ class HPCDomain:
             # These are the bottom row x-coordinates:
             x_coords = self.dof_coordinates[0 : Nx * (Nz + 1) : Nz + 1, 0]
             i = np.argmin(np.abs(x_coords - x)).item()
-        
+
         column_dofs = [i * (Nz + 1) + j for j in range(Nz + 1)]
         return column_dofs
 

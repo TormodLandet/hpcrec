@@ -14,7 +14,6 @@ from __future__ import annotations
 import numpy as np
 
 import hpcrec
-from hpcrec.polynomials import eval_phi
 
 
 class FreeSurfaceConformingDomain(hpcrec.HPCDomain):
@@ -190,17 +189,24 @@ def compute_velocity(
         Vertical velocity ``dphi/dz`` at the requested DOFs.
     """
     phi = np.asarray(phi, dtype=float)
+    nb, _, cx, cy = domain.cache.get_all()
+
     if dofs is None:
-        dofs = list(range(len(phi)))
+        # All DOFs: use the full cached arrays directly (no copy)
+        nb_sel = nb
+        cx_sel = cx
+        cy_sel = cy
+    else:
+        dofs_arr = np.asarray(dofs, dtype=np.intp)
+        nb_sel = nb[dofs_arr]  # (M, 8)
+        cx_sel = cx[dofs_arr]  # (M, 8)
+        cy_sel = cy[dofs_arr]  # (M, 8)
 
-    u = np.empty(len(dofs))
-    w = np.empty(len(dofs))
-
-    for k, dof in enumerate(dofs):
-        neighbours, _c, cx, cy = eval_phi(domain, dof)
-        u[k] = float(np.dot(cx, phi[neighbours]))
-        w[k] = float(np.dot(cy, phi[neighbours]))
-
+    # Gather neighbour phi values and compute row-wise dot products.
+    # phi[nb_sel] has shape (M, 8); result has shape (M,).
+    phi_nb = phi[nb_sel]
+    u = (cx_sel * phi_nb).sum(axis=1)
+    w = (cy_sel * phi_nb).sum(axis=1)
     return u, w
 
 

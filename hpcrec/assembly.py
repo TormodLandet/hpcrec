@@ -4,7 +4,6 @@ import numpy
 
 from .mesh import HPCDomain
 from .linalg import Matrix, Vector
-from .polynomials import eval_phi
 
 AssemblyMethod: TypeAlias = Literal["csr", "standard"]
 
@@ -14,6 +13,7 @@ def assemble(domain: HPCDomain, method: AssemblyMethod = "csr"):
     Assemble HPC matrix for the given domain
     """
     N = len(domain.dof_coordinates)
+    nb_all, coeffs_all, _, _ = domain.cache.get_all()
 
     if method == "csr":
         # Assemble into CSR data structures
@@ -21,7 +21,8 @@ def assemble(domain: HPCDomain, method: AssemblyMethod = "csr"):
         # This is slightly slower (very marginal) for PETSc and Numpy
         data, indices, indptr = [], [], [0]
         for dof in range(N):
-            neighbours, coeffs, _, _ = eval_phi(domain, dof)
+            neighbours = nb_all[dof]
+            coeffs = coeffs_all[dof]
             tmp = list(zip(neighbours, coeffs))
             tmp.append((dof, -1))
             tmp.sort()
@@ -39,7 +40,8 @@ def assemble(domain: HPCDomain, method: AssemblyMethod = "csr"):
         # assembly to CSR data structures (as above)
         A = Matrix(N, N)
         for dof in range(N):
-            neighbours, coeffs, _, _ = eval_phi(domain, dof)
+            neighbours = nb_all[dof]
+            coeffs = coeffs_all[dof]
             for i, dof_i in enumerate(neighbours):
                 A[dof, dof_i] = -coeffs[i]
             A[dof, dof] = 1

@@ -15,7 +15,7 @@ The hpcrec package is available on GitHub: https://github.com/TormodLandet/hpcre
 """
 
 # Version of the package
-__version__ = "2026.06.24"
+__version__ = "1.0.0"
 
 
 class HPCError(Exception):
