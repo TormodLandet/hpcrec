@@ -30,3 +30,4 @@ from .polynomials import eval_phi
 from .assembly import assemble, AssemblyMethod
 from .boundary_conditions import apply_bcs, BcType
 from .plotting import plot, interactive
+from .wave_reconstruct import reconstruct_wave_kinematics_using_hpc, HpcWaveKinematics
