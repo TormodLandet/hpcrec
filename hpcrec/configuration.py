@@ -1,21 +1,5 @@
 from contextlib import contextmanager
 
-# Optional Cython module
-try:
-    import pyximport
-
-    pyximport.install()
-    del pyximport
-    has_cython = True
-except ImportError:
-    has_cython = False
-
-if has_cython:
-    from . import hpc_cython
-else:
-    hpc_cython = None
-del has_cython
-
 
 def get_default_parameters():
     return {

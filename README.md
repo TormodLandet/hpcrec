@@ -11,9 +11,9 @@ free surface. Any other features are probably not going to be maintained.
 
 For sparse linear algebra either PETSc (petsc4py) or SciPy (scipy.sparse) can be used.
 On a single processor MUMPS through PETSc and SuperLU through SciPy perform about the same.
-For small problems where dense matrices are ok numpy can be used as well.
-The assembly of local interpolation matrices is implemented in Cython for speed (optional!), the
-rest of the code is pure Python (originally v 2.7, ported to 3.12 in 2026).
+For small problems where dense matrices are ok numpy can be used as well. The remainder of the code
+is pure Python with numpy (originally v 2.7, ported to 3.12 in 2026). There is optional matplotlib
+support for plotting (triangulated).
 
 **NOTE 1:**
 The code also contains an *old* interface with FEniCS to benchmark the HPC method's harmonic

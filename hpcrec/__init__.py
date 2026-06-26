@@ -22,7 +22,7 @@ class HPCError(Exception):
     pass
 
 
-from .configuration import parameters, get_default_parameters, local_parameters, hpc_cython
+from .configuration import parameters, get_default_parameters, local_parameters
 from .timer import Timer
 from .mesh import rectangle_domain, HPCDomain, DOF_TYPE_EXTERNAL, DOF_TYPE_INTERNAL
 from .linalg import Matrix, Vector, LinearSolver, solve

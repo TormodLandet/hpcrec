@@ -1,6 +1,6 @@
 import numpy as np
 
-from hpcrec import hpc_cython, HPCDomain, HPCError
+from hpcrec import HPCDomain, HPCError
 
 
 # Harmonic polynomials defined as follows: C x^ex y^ey => (C, ex, ey)
@@ -136,8 +136,7 @@ def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool = False):
     # neighbour of column 0 (and vice versa).  The stored x-coordinate of the
     # wrapped neighbour is on the far side of the domain (x ≈ L-dx instead of
     # -dx).  We fix this by folding the relative x back into (-L/2, L/2] before
-    # building the local polynomial matrix.  The Cython path does not support
-    # this wrapping, so we fall through to the Python path for periodic domains.
+    # building the local polynomial matrix.
     x_period: float | None = None
     if domain.periodic_x and domain.grid_shape is not None:
         Nx_g, Ny_g = domain.grid_shape
@@ -145,27 +144,24 @@ def eval_phi(domain: HPCDomain, dof: int, grad_grad: bool = False):
         dx_g = float(dof_coordinates[Ny_g + 1, 0] - dof_coordinates[0, 0])
         x_period = Nx_g * dx_g
 
-    if hpc_cython is not None and x_period is None:
-        hpc_cython.setup_local_matrix(dof, dof_neighbours, dof_coordinates, M)
-    else:
-        x0, y0 = dof_coordinates[dof]
+    x0, y0 = dof_coordinates[dof]
+    
+    for i, dof_i in enumerate(dof_neighbours[dof]):
+        x, y = dof_coordinates[dof_i]
+        xr = x - x0
+        yr = y - y0
+        if x_period is not None:
+            # Fold xr into (-L/2, L/2] for the wrapped periodic neighbour
+            if xr > x_period / 2:
+                xr -= x_period
+            elif xr < -x_period / 2:
+                xr += x_period
 
-        for i, dof_i in enumerate(dof_neighbours[dof]):
-            x, y = dof_coordinates[dof_i]
-            xr = x - x0
-            yr = y - y0
-            if x_period is not None:
-                # Fold xr into (-L/2, L/2] for the wrapped periodic neighbour
-                if xr > x_period / 2:
-                    xr -= x_period
-                elif xr < -x_period / 2:
-                    xr += x_period
-
-            for j, poly in enumerate(HARMONIC_POLYNOMIALS_2D[:N]):
-                fij = 0
-                for C, ex, ey in poly:
-                    fij += C * xr**ex * yr**ey
-                M[i, j] = fij
+        for j, poly in enumerate(HARMONIC_POLYNOMIALS_2D[:N]):
+            fij = 0
+            for C, ex, ey in poly:
+                fij += C * xr**ex * yr**ey
+            M[i, j] = fij
 
     try:
         C = np.linalg.inv(M)
